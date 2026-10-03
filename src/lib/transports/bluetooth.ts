@@ -5,6 +5,7 @@
  * این مسیر فقط داخل وب‌ویوی اپ اندرویدی (که با این پروژه ساخته می‌شود) کار می‌کند.
  * پس این فایل هم لایه‌ی اصلی محصول است، هم تست «نبودن پل» در node دارد.
  */
+import { logAppend } from "../log.ts";
 import { Transport, type TransportEvents } from "./transport.ts";
 
 export interface BtDevice {
@@ -42,6 +43,8 @@ export function btAvailable(): boolean {
  */
 function friendlyBtError(err: unknown, fallback: string): string {
   const raw = errText(err, fallback);
+  // دلیل خام را در تب کنسول ثبت کن تا گزارش بعدی بدون حدس باشد
+  if (raw !== fallback) logAppend("err", "بلوتوث: " + raw);
   if (/permission|SecurityException|denied|not granted/i.test(raw)) {
     console.warn("[bt] permission error:", raw);
     return (
@@ -52,8 +55,9 @@ function friendlyBtError(err: unknown, fallback: string): string {
   if (/unable to connect|connection attempt|connect-failed/i.test(raw)) {
     console.warn("[bt] connect error:", raw);
     return (
-      "اتصال برقرار نشد — چک کنید: ۱) دستگاه «جفت‌شده» باشد ۲) LED ماژول چشمک آهسته باشد نه تند (تند = حالت AT) " +
-      "۳) ماژول فقط یک اتصال همزمان دارد و به دستگاه دیگر وصل نیست ۴) برد کوتاه. بعد دوباره وصل شوید"
+      "اتصال برقرار نشد — چک کنید: ۱) جفت (pair) شده باشد ۲) به اپ یا کامپیوتر دیگری وصل نباشد " +
+      "(LED ثابت = الان وصل است؛ چشمک تند = آماده و درست) ۳) چشمک دوتایی = حالت AT؛ دکمه EN/POW را رها کنید " +
+      "۴) بعد از قطع اتصال دستگاه دیگر ۲ ثانیه صبر و دوباره بزنید — جزئیات خام در تب کنسول (✕)"
     );
   }
   if (/pairing-cancelled/i.test(raw)) return "جفت‌سازی لغو شد — رمز پیش‌فرض معمول HC-05 عدد 1234 است";

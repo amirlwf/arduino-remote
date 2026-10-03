@@ -25,8 +25,12 @@ const JAVA_TARGETS = [
   path.join(root, "android", "capacitor-cordova-android-plugins", "src", "main", "java", "com", "megster", "cordova", "BluetoothSerial.java"),
 ];
 const WWW_TARGETS = [
-  path.join(root, "node_modules", "cordova-plugin-bluetooth-serial", "www", "bluetoothSerial.js"),
-  path.join(root, "android", "app", "src", "main", "assets", "public", "plugins", "cordova-plugin-bluetooth-serial", "www", "bluetoothSerial.js"),
+  path.join(root, "node_modules/cordova-plugin-bluetooth-serial/www/bluetoothSerial.js"),
+  path.join(root, "android/app/src/main/assets/public/plugins/cordova-plugin-bluetooth-serial/www/bluetoothSerial.js"),
+];
+const SERVICE_TARGETS = [
+  path.join(root, "node_modules/cordova-plugin-bluetooth-serial/src/android/com/megster/cordova/BluetoothSerialService.java"),
+  path.join(root, "android/capacitor-cordova-android-plugins/src/main/java/com/megster/cordova/BluetoothSerialService.java"),
 ];
 
 /* ---------------------------------------------- پچ ۱: درِ جستجوی اندروید ۱۲+ */
@@ -157,6 +161,54 @@ const PATCHES = [
   { id: "pair-action", marker: "PATCH(arduino-remote-pair-action)", old: P3_OLD, new: P3_NEW, targets: JAVA_TARGETS },
   { id: "pair-method", marker: "PATCH(arduino-remote-pair-method)", old: P4_OLD, new: P4_NEW, targets: JAVA_TARGETS },
   { id: "pair-www", marker: "PATCH(arduino-remote-pair-www)", old: P5_OLD, new: P5_NEW, targets: WWW_TARGETS },
+
+  /* پچ ۶ — دیاگ: دلیل واقعی شکست connect را تا JS بکشان (لاگکت‌کت در دسترس کاربر نیست) */
+  {
+    id: "diag-field",
+    marker: "PATCH(arduino-remote-diag-field)",
+    old: `    // Debugging
+    private static final String TAG = "BluetoothSerialService";
+    private static final boolean D = true;`,
+    new: `    // Debugging
+    private static final String TAG = "BluetoothSerialService";
+    private static final boolean D = true;
+    // PATCH(arduino-remote-diag-field): دلیل واقعی شکست اتصال — در کنسول اپ نمایش داده می‌شود
+    public static volatile String lastConnectError = null;`,
+    targets: SERVICE_TARGETS,
+  },
+  {
+    id: "diag-toast",
+    marker: "PATCH(arduino-remote-diag-toast)",
+    old: `        bundle.putString(BluetoothSerial.TOAST, "Unable to connect to device");`,
+    new: `        // PATCH(arduino-remote-diag-toast): پیام خام استثنا را هم بفرست
+        bundle.putString(BluetoothSerial.TOAST, "Unable to connect to device"
+            + (lastConnectError != null ? (": " + lastConnectError) : ""));`,
+    targets: SERVICE_TARGETS,
+  },
+  {
+    id: "diag-io",
+    marker: "PATCH(arduino-remote-diag-io)",
+    old: `            } catch (IOException e) {
+                Log.e(TAG, e.toString());
+
+                // Some 4.1 devices have problems, try an alternative way to connect`,
+    new: `            } catch (IOException e) {
+                Log.e(TAG, e.toString());
+                lastConnectError = e.toString(); // PATCH(arduino-remote-diag-io)
+
+                // Some 4.1 devices have problems, try an alternative way to connect`,
+    targets: SERVICE_TARGETS,
+  },
+  {
+    id: "diag-e2",
+    marker: "PATCH(arduino-remote-diag-e2)",
+    old: `                } catch (Exception e2) {
+                    Log.e(TAG, "Couldn't establish a Bluetooth connection.");`,
+    new: `                } catch (Exception e2) {
+                    Log.e(TAG, "Couldn't establish a Bluetooth connection.");
+                    lastConnectError = e2.toString(); // PATCH(arduino-remote-diag-e2)`,
+    targets: SERVICE_TARGETS,
+  },
 ];
 
 let patched = 0;
