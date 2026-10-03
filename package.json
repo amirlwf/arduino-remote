@@ -1,6 +1,6 @@
 {
   "name": "arduino-remote",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "type": "module",
   "description": "ریموت کنترل دستگاه‌های آردوینو — TypeScript + React + Capacitor (Android)",
@@ -9,8 +9,8 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "node --experimental-strip-types tests/unit.mjs",
-    "postinstall": "node scripts/patch-capacitor-mirrors.js",
-    "android:sync": "npm run build && npx cap sync android && node scripts/patch-capacitor-mirrors.js",
+    "postinstall": "node scripts/patch-capacitor-mirrors.js && node scripts/patch-bt-plugin.js",
+    "android:sync": "npm run build && npx cap sync android && node scripts/patch-capacitor-mirrors.js && node scripts/patch-bt-plugin.js",
     "android:release": "npm run android:sync && node scripts/android-release.mjs"
   },
   "dependencies": {

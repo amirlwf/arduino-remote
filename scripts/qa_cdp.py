@@ -135,14 +135,13 @@ ck("اتصال شبیه‌ساز", bool(wait("document.querySelector('#conn-text
 
 G = "window.__ARDUINO_REMOTE__"
 ev("document.querySelector('.ccard [data-testid=toggle-btn]').click()")
-time.sleep(0.2)
 t_on = ev(f"{G}.store.snapshot().profiles[0].controls.find(c=>c.type==='toggle').on")
 ck("کلید: on=true شد", t_on is True, t_on)
-lg = ev(f"{G}.getLogs().map(e=>e.dir+' | '+e.text)")
-tx = [l for l in lg if l.startswith("tx")]
-rx = [l for l in lg if l.startswith("rx")]
-ck("کلید: فرمان tx", len(tx) >= 1, tx[-2:])
-ck("کلید: echo rx", len(rx) >= 1, rx[-2:])
+# انتظار شرطی: استارت سرد کروم ممکن است echo را با تأخیر بفرستد
+ck("کلید: فرمان tx", bool(wait(f"{G}.getLogs().some(e=>e.dir==='tx'&&e.text==='1')", 5)),
+   ev(f"{G}.getLogs().slice(-4).map(e=>e.dir+' | '+e.text)"))
+ck("کلید: echo rx", bool(wait(f"{G}.getLogs().some(e=>e.dir==='rx'&&e.text==='1')", 5)),
+   ev(f"{G}.getLogs().slice(-4).map(e=>e.dir+' | '+e.text)"))
 
 sl = ev(f"{G}.store.snapshot().profiles[0].controls.find(c=>c.type==='slider')")
 mn, mx, om, ox = sl["min"], sl["max"], sl["outMin"], sl["outMax"]
@@ -150,18 +149,15 @@ expected = sl["template"].replace("{v}", str(int(round(om + (80 - mn) / (mx - mn
 ev("""(()=>{const r=document.querySelector('.ccard input[type=range]');
 const s=Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set;
 s.call(r,'80'); r.dispatchEvent(new Event('input',{bubbles:true})); r.dispatchEvent(new Event('change',{bubbles:true})); return 'ok';})()""")
-time.sleep(0.25)
-lg = ev(f"{G}.getLogs().map(e=>e.dir+' | '+e.text)")
-tx = [l.split(" | ", 1)[-1] for l in lg if l.startswith("tx")]
-ck("لغزنده: نگاشت عددی رفت", expected in tx, f"expected={expected} last={tx[-3:]}")
+ck("لغزنده: نگاشت عددی رفت",
+   bool(wait(f"{G}.getLogs().some(e=>e.dir==='tx'&&e.text==={json.dumps(expected)})", 5)),
+   f"expected={expected} last=" + str(ev(f"{G}.getLogs().slice(-4).map(e=>e.dir+' | '+e.text)")))
 
 mo = ev(f"{G}.store.snapshot().profiles[0].controls.find(c=>c.type==='momentary')")
-n_before = len(lg)
 ev("""document.querySelectorAll('.ccard')[1].querySelector('[data-testid=momentary-btn]').dispatchEvent(new PointerEvent('pointerdown',{bubbles:true}))""")
-time.sleep(0.2)
-lg = ev(f"{G}.getLogs().map(e=>e.dir+' | '+e.text)")
-new_tx = [l.split(" | ", 1)[-1] for l in lg[n_before:] if l.startswith("tx")]
-ck("لحظه‌ای: دستور فشردن", bool(new_tx) and new_tx[0].strip() == mo["pressPayload"], f"{new_tx} pressPayload={mo['pressPayload']}")
+ck("لحظه‌ای: دستور فشردن",
+   bool(wait(f"{G}.getLogs().some(e=>e.dir==='tx'&&e.text==={json.dumps(mo['pressPayload'])})", 5)),
+   f"pressPayload={mo['pressPayload']} last=" + str(ev(f"{G}.getLogs().slice(-4).map(e=>e.dir+' | '+e.text)")))
 
 ck("بدون خطای JS پس از تعامل فاز ۱", ev("window.__appErrors.length") == 0 and ev("window.__pageErrors.length") == 0,
    {"app": ev("window.__appErrors"), "page": ev("window.__pageErrors")})

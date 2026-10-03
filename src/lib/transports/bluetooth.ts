@@ -31,6 +31,22 @@ export function btAvailable(): boolean {
   return getBridge() !== undefined;
 }
 
+/**
+ * خطای مجوز را از پیام خام انگلیسی پلاگین تشخیص می‌دهد و به فارسیِ قابل‌اقدام تبدیل می‌کند.
+ * پیام خام در کنسول می‌ماند تا عیب‌یابی از دست نرود.
+ */
+function friendlyBtError(err: unknown, fallback: string): string {
+  const raw = errText(err, fallback);
+  if (/permission|SecurityException|denied|not granted/i.test(raw)) {
+    console.warn("[bt] permission error:", raw);
+    return (
+      "دسترسی بلوتوث داده نشده — از تنظیمات گوشی «برنامه‌ها → Arduino Remote → مجوزها» " +
+      "«دستگاه‌های اطراف» (اندروید ۱۲+) یا «موقعیت مکانی» (اندروید قدیمی‌تر) را فعال کنید و دوباره تلاش کنید"
+    );
+  }
+  return raw;
+}
+
 function errText(err: unknown, fallback: string): string {
   if (typeof err === "string" && err.trim() !== "") return err;
   if (err instanceof Error && err.message !== "") return err.message;
@@ -56,7 +72,7 @@ export function btList(): Promise<BtDevice[]> {
   return new Promise((resolve, reject) => {
     b.list(
       (devices) => resolve(toDevices(devices)),
-      (err) => reject(new Error(errText(err, "خواندن فهرست دستگاه‌ها ناموفق بود")))
+      (err) => reject(new Error(friendlyBtError(err, "خواندن فهرست دستگاه‌ها ناموفق بود")))
     );
   });
 }
@@ -68,7 +84,7 @@ export function btDiscover(): Promise<BtDevice[]> {
   return new Promise((resolve, reject) => {
     b.discoverUnpaired(
       (devices) => resolve(toDevices(devices)),
-      (err) => reject(new Error(errText(err, "جستجو ناموفق بود — مجوزهای بلوتوث را بدهید")))
+      (err) => reject(new Error(friendlyBtError(err, "جستجو ناموفق بود — بلوتوث را روشن کنید"))),
     );
   });
 }
@@ -83,7 +99,7 @@ export function btConnect(address: string): Promise<void> {
     b.connect(
       address.trim(),
       () => resolve(),
-      (err) => reject(new Error(errText(err, "اتصال بلوتوث ناموفق بود")))
+      (err) => reject(new Error(friendlyBtError(err, "اتصال بلوتوث ناموفق بود")))
     );
   });
 }
@@ -110,7 +126,7 @@ export function btWrite(data: string): Promise<void> {
     b.write(
       data,
       () => resolve(),
-      (err) => reject(new Error(errText(err, "ارسال به بلوتوث ناموفق بود")))
+      (err) => reject(new Error(friendlyBtError(err, "ارسال به بلوتوث ناموفق بود")))
     );
   });
 }
