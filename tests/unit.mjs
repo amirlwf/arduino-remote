@@ -333,6 +333,29 @@ eq("log: پاک شد", getLogs().length, 0);
   err = await run();
   check("bt: لغو جفت‌سازی → پیام فارسی", !!err && err.message.includes("جفت‌سازی لغو شد"), err ? err.message : "no throw");
 
+  // حالت ۶: read failed (کلید کهنه) → بازسازی جفت و تلاش مجدد
+  calls = [];
+  bridge.list = (ok) => ok([{ address: "AA:BB:CC:DD:EE:FF", name: "HC-05" }]);
+  bridge.pair = (_a, ok) => { calls.push("pair"); ok("paired"); };
+  let firstConnect = true;
+  bridge.connect = (_a, ok, fail) => {
+    calls.push("connect");
+    if (firstConnect) { firstConnect = false; fail("Unable to connect to device: java.io.IOException: read failed"); }
+    else ok();
+  };
+  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: java.io.IOException: read failed"); };
+  err = await run();
+  eq("bt: read failed → بازسازی جفت و اتصال مجدد", err ? "THREW:" + err.message : JSON.stringify(calls),
+     '["connect","insecure","pair","connect"]');
+
+  // حالت ۷: اتصال ردشده (بدون read failed) → بدون بازسازی پرتاب می‌شود
+  calls = [];
+  bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device: Connection refused"); };
+  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: Connection refused"); };
+  err = await run();
+  eq("bt: اتصال اشغال فقط دو تلاش — بدون pair دوم", JSON.stringify(calls), '["connect","insecure"]');
+  check("bt: اتصال اشغال پرتاب شد", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
+
   delete globalThis.bluetoothSerial;
 }
 

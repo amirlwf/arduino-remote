@@ -209,6 +209,99 @@ const PATCHES = [
                     lastConnectError = e2.toString(); // PATCH(arduino-remote-diag-e2)`,
     targets: SERVICE_TARGETS,
   },
+
+  /* پچ ۷ — بازسازی جفت (v2): جفت کهنه را removeBond بزن و تازه جفت کن
+     دلیل: java.io.IOException: read failed = کلید ناهماهنگ (link-key desync) */
+  {
+    id: "pair-v2-a",
+    marker: "PATCH(arduino-remote-pair-method-v2-a)",
+    old: `    private void pairDevice(final String address, final CallbackContext callbackContext) {
+        final boolean[] done = { false };
+        android.content.BroadcastReceiver receiver = null;
+        try {
+            final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                callbackContext.success("paired");
+                return;
+            }`,
+    new: `    private void pairDevice(final String address, final CallbackContext callbackContext) {
+        // PATCH(arduino-remote-pair-method-v2-a): جفت کهنه اول removeBond می‌شود (رفع read failed)
+        final boolean[] done = { false };
+        final String[] stage = { "bond" };
+        android.content.BroadcastReceiver receiver = null;
+        try {
+            final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "pair-v2-b",
+    marker: "PATCH(arduino-remote-pair-method-v2-b)",
+    old: `                    int st = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    int prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    if (st == BluetoothDevice.BOND_BONDED) {
+                        finish("paired");
+                    } else if (st == BluetoothDevice.BOND_NONE && prev == BluetoothDevice.BOND_BONDING) {
+                        finish(null);
+                    }`,
+    new: `                    int st = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    int prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    // PATCH(arduino-remote-pair-method-v2-b): مرحله‌ی unbond → بعد createBond
+                    if ("unbond".equals(stage[0])) {
+                        if (st == BluetoothDevice.BOND_NONE) {
+                            stage[0] = "bond";
+                            try {
+                                java.lang.reflect.Method mb = device.getClass().getMethod("createBond");
+                                if (!Boolean.TRUE.equals(mb.invoke(device))) {
+                                    finish("pair-error: createBond rejected after removeBond");
+                                }
+                            } catch (Exception ex) {
+                                finish("pair-error: " + ex.getMessage());
+                            }
+                        }
+                        return;
+                    }
+                    if (st == BluetoothDevice.BOND_BONDED) {
+                        finish("paired");
+                    } else if (st == BluetoothDevice.BOND_NONE && prev == BluetoothDevice.BOND_BONDING) {
+                        finish(null);
+                    }`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "pair-v2-c",
+    marker: "PATCH(arduino-remote-pair-method-v2-c)",
+    old: `            java.lang.reflect.Method m = device.getClass().getMethod("createBond");
+            if (!Boolean.TRUE.equals(m.invoke(device))) {
+                if (!done[0]) {
+                    done[0] = true;
+                    try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                    callbackContext.error("createBond-rejected");
+                }
+            }`,
+    new: `            // PATCH(arduino-remote-pair-method-v2-c): جفت کهنه؟ اول حذف، بعد جفت تازه
+            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                stage[0] = "unbond";
+                java.lang.reflect.Method rm = device.getClass().getMethod("removeBond");
+                if (!Boolean.TRUE.equals(rm.invoke(device))) {
+                    stage[0] = "bond";
+                    if (!done[0]) {
+                        done[0] = true;
+                        try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                        callbackContext.success("paired");
+                    }
+                }
+            } else {
+                java.lang.reflect.Method m = device.getClass().getMethod("createBond");
+                if (!Boolean.TRUE.equals(m.invoke(device))) {
+                    if (!done[0]) {
+                        done[0] = true;
+                        try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                        callbackContext.error("createBond-rejected");
+                    }
+                }
+            }`,
+    targets: JAVA_TARGETS,
+  },
 ];
 
 let patched = 0;

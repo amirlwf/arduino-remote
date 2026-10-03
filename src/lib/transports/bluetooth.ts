@@ -6,6 +6,7 @@
  * پس این فایل هم لایه‌ی اصلی محصول است، هم تست «نبودن پل» در node دارد.
  */
 import { logAppend } from "../log.ts";
+import { toast } from "../toast.ts";
 import { Transport, type TransportEvents } from "./transport.ts";
 
 export interface BtDevice {
@@ -175,15 +176,34 @@ export async function btConnect(address: string): Promise<void> {
     throw new Error(friendlyBtError(e, "دستگاه جفت نشد — از تنظیمات بلوتوث گوشی جفت کنید (رمز 1234) و دوباره تلاش کنید"));
   }
 
+  // تلاش امن، بعد ناامن (SPP بدون باندینگ — رایج برای HC-05)
+  let lastErr: Error = new Error("connect-failed");
   try {
     await connectAttempt(b, addr, true);
-  } catch (secureErr) {
+    return;
+  } catch (e) {
+    lastErr = e as Error;
+  }
+  try {
+    await connectAttempt(b, addr, false);
+    return;
+  } catch (e) {
+    lastErr = e as Error;
+  }
+
+  // «read failed» یعنی کلید جفت کهنه/ناهماهنگ است → جفت را بازسازی کن و یک بار دیگر وصل شو
+  if (/read failed|Connection reset|socket closed|Broken pipe/i.test(lastErr.message)) {
+    logAppend("sys", "خطای read failed — بازسازی جفت‌سازی (پاک‌کردن کلید کهنه)…");
+    toast("کلید جفت کهنه پاک شد — دوباره ۱۲۳۴ را بزن تا جفت تازه ساخته شود", "err");
     try {
-      await connectAttempt(b, addr, false);
-    } catch {
-      throw new Error(friendlyBtError(secureErr, "اتصال بلوتوث ناموفق بود"));
+      await btPair(addr);
+      await connectAttempt(b, addr, true);
+      return;
+    } catch (e2) {
+      lastErr = e2 as Error;
     }
   }
+  throw new Error(friendlyBtError(lastErr, "اتصال بلوتوث ناموفق بود"));
 }
 
 export function btDisconnect(): Promise<void> {
