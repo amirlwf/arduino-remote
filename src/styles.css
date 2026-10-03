@@ -281,3 +281,23 @@ a { color: var(--blue); }
 .note.warn { background: #ffb34712; border-color: #ffb34755; color: #ffe4bd; }
 .note b { display: block; margin-bottom: 3px; }
 hr.sep { border: 0; border-top: 1px solid var(--line); margin: 14px 0; }
+
+
+/* لینک‌ها و نشان‌ها */
+a {
+  color: #34d399;
+  text-decoration: none;
+}
+a:hover {
+  text-decoration: underline;
+}
+.badge-mini {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: rgba(245, 158, 11, 0.16);
+  color: #fbbf24;
+  font-size: 10.5px;
+  font-weight: 700;
+}

@@ -21,6 +21,11 @@ interface BluetoothSerialBridge {
   isConnected(success: () => void, failure: (err: unknown) => void): void;
   list(success: (devices: Array<Record<string, unknown>>) => void, failure: (err: unknown) => void): void;
   discoverUnpaired(success: (devices: Array<Record<string, unknown>>) => void, failure: (err: unknown) => void): void;
+  /** افزوده‌ی پچ این پروژه: جفت‌سازی با createBond (پنجره‌ی PIN سیستم) */
+  pair?(device: string, success: (result: string) => void, failure: (err: unknown) => void): void;
+  /** اتصال RFCOMM ناامن — پشتیبان برای دستگاه‌های جفت‌نشده مثل HC-05 */
+  connectInsecure?(device: string, success: () => void, failure: (err: unknown) => void): void;
+  showBluetoothSettings?(success: () => void, failure: (err: unknown) => void): void;
 }
 
 export function getBridge(): BluetoothSerialBridge | undefined {
@@ -43,6 +48,19 @@ function friendlyBtError(err: unknown, fallback: string): string {
       "دسترسی بلوتوث داده نشده — از تنظیمات گوشی «برنامه‌ها → Arduino Remote → مجوزها» " +
       "«دستگاه‌های اطراف» (اندروید ۱۲+) یا «موقعیت مکانی» (اندروید قدیمی‌تر) را فعال کنید و دوباره تلاش کنید"
     );
+  }
+  if (/unable to connect|connection attempt|connect-failed/i.test(raw)) {
+    console.warn("[bt] connect error:", raw);
+    return (
+      "اتصال برقرار نشد — چک کنید: ۱) دستگاه «جفت‌شده» باشد ۲) LED ماژول چشمک آهسته باشد نه تند (تند = حالت AT) " +
+      "۳) ماژول فقط یک اتصال همزمان دارد و به دستگاه دیگر وصل نیست ۴) برد کوتاه. بعد دوباره وصل شوید"
+    );
+  }
+  if (/pairing-cancelled/i.test(raw)) return "جفت‌سازی لغو شد — رمز پیش‌فرض معمول HC-05 عدد 1234 است";
+  if (/pair-timeout/i.test(raw)) return "جفت‌سازی بیش از حد طول کشید — ماژول را روشن و نزدیک گوشی نگه دارید و دوباره تلاش کنید";
+  if (/createBond-rejected|pair-error/i.test(raw)) {
+    console.warn("[bt] pair error:", raw);
+    return "جفت‌سازی از داخل اپ ممکن نشد — از «تنظیمات بلوتوث گوشی» دستگاه را جفت کنید (رمز 1234) و بعد از فهرست «جفت‌شده‌ها» وصل شوید";
   }
   return raw;
 }
@@ -84,24 +102,84 @@ export function btDiscover(): Promise<BtDevice[]> {
   return new Promise((resolve, reject) => {
     b.discoverUnpaired(
       (devices) => resolve(toDevices(devices)),
-      (err) => reject(new Error(friendlyBtError(err, "جستجو ناموفق بود — بلوتوث را روشن کنید"))),
+      (err) => reject(new Error(friendlyBtError(err, "جستجو ناموفق بود — بلوتوث را روشن کنید")))
     );
   });
 }
 
-export function btConnect(address: string): Promise<void> {
+/** جفت‌سازی (createBond) — پنجره‌ی PIN سیستم را باز می‌کند؛ رمز پیش‌فرض HC-05: 1234 */
+export function btPair(address: string): Promise<void> {
   const b = getBridge();
   if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)"));
-  if (address.trim() === "") {
-    return Promise.reject(new Error("آدرس دستگاه بلوتوث خالی است — از بخش تنظیمات انتخاب کنید"));
+  if (typeof b.pair !== "function") {
+    return Promise.reject(new Error("این نسخه از پلاگین جفت‌سازی ندارد — از تنظیمات بلوتوث گوشی جفت کنید (رمز 1234)"));
   }
   return new Promise((resolve, reject) => {
-    b.connect(
+    b.pair!(
       address.trim(),
       () => resolve(),
-      (err) => reject(new Error(friendlyBtError(err, "اتصال بلوتوث ناموفق بود")))
+      (err) => reject(new Error(errText(err, "pair-error")))
     );
   });
+}
+
+/** باز کردن صفحه‌ی تنظیمات بلوتوث سیستم (برای جفت‌سازی دستی) */
+export function openBtSettings(): void {
+  const b = getBridge();
+  if (!b || typeof b.showBluetoothSettings !== "function") return;
+  try {
+    b.showBluetoothSettings!(() => undefined, () => undefined);
+  } catch {
+    /* پل در دسترس نیست */
+  }
+}
+
+/** یک تلاش اتصال (امن یا ناامن) */
+function connectAttempt(b: BluetoothSerialBridge, addr: string, secure: boolean): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const fail = (err: unknown) => reject(new Error(errText(err, "connect-failed")));
+    if (secure) {
+      b.connect(addr, () => resolve(), fail);
+    } else if (typeof b.connectInsecure === "function") {
+      b.connectInsecure(addr, () => resolve(), fail);
+    } else {
+      fail("connectInsecure-n/a");
+    }
+  });
+}
+
+/**
+ * اتصال با جفت‌سازی خودکار:
+ * ۱) اگر دستگاه در فهرست جفت‌شده‌ها نیست، اول pair می‌زنیم (پنجره‌ی PIN سیستم).
+ * ۲) اتصال امن؛ اگر شکست خورد تلاش ناامن (SPP بدون باندینگ — رایج برای HC-05).
+ * خطاها با friendlyBtError فارسی و قابل‌اقدام می‌شوند.
+ */
+export async function btConnect(address: string): Promise<void> {
+  const b = getBridge();
+  if (!b) throw new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)");
+  const addr = address.trim();
+  if (addr === "") {
+    throw new Error("آدرس دستگاه بلوتوث خالی است — از بخش تنظیمات انتخاب کنید");
+  }
+
+  try {
+    const bonded = await btList();
+    if (!bonded.some((d) => d.id.toUpperCase() === addr.toUpperCase())) {
+      await btPair(addr);
+    }
+  } catch (e) {
+    throw new Error(friendlyBtError(e, "دستگاه جفت نشد — از تنظیمات بلوتوث گوشی جفت کنید (رمز 1234) و دوباره تلاش کنید"));
+  }
+
+  try {
+    await connectAttempt(b, addr, true);
+  } catch (secureErr) {
+    try {
+      await connectAttempt(b, addr, false);
+    } catch {
+      throw new Error(friendlyBtError(secureErr, "اتصال بلوتوث ناموفق بود"));
+    }
+  }
 }
 
 export function btDisconnect(): Promise<void> {

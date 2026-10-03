@@ -199,6 +199,9 @@ ck("کنسول: ارسال دستور آزاد", any(l == "tx | RAW1" for l in l
 # تنظیمات: پروفایل + خروجی JSON + اتصال وب‌سوکت
 ev("document.querySelector('.tab[data-tab=settings]').click()")
 ck("پنل تنظیمات", bool(wait("!!document.querySelector('[data-testid=panel-transport]')")))
+ck("لوگوی سازنده: لینک amirlwf.ir",
+   bool(wait("!!document.querySelector('[data-testid=creator] a') && document.querySelector('[data-testid=creator] a').href.includes('amirlwf.ir')", 4)),
+   ev("document.querySelector('[data-testid=creator] a') ? document.querySelector('[data-testid=creator] a').href : 'NO_EL'"))
 ev("document.querySelector('[data-testid=add-profile]').click()")
 ck("مودال پروفایل باز شد", bool(wait("document.querySelector('[data-testid=profile-modal]')?.open", 4)))
 set_input("[data-testid=prof-name]", "تست ماندگاری")

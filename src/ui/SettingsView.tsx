@@ -5,7 +5,7 @@ import { getManager } from "../lib/connection.ts";
 import { exportJson } from "../lib/storage.ts";
 import { toast } from "../lib/toast.ts";
 import { TRANSPORT_LABELS, type Profile, type TransportKind } from "../lib/types.ts";
-import { btAvailable, btDiscover, btList, type BtDevice } from "../lib/transports/bluetooth.ts";
+import { btAvailable, btDiscover, btList, openBtSettings, type BtDevice } from "../lib/transports/bluetooth.ts";
 
 const KIND_ICON: Record<TransportKind, string> = {
   demo: "🎮",
@@ -16,7 +16,7 @@ const KIND_ICON: Record<TransportKind, string> = {
 
 const KIND_DESC: Record<TransportKind, string> = {
   demo: "بدون سخت‌افزار — برای یادگیری و تست. هر دستور بلافاصله به‌صورت پیام دریافتی برمی‌گردد.",
-  bluetooth: "اتصال مستقیم به HC-05 با بلوتوث گوشی. فقط داخل نسخه‌ی APK (اپ اندروید) کار می‌کند.",
+  bluetooth: "اتصال مستقیم به HC-05 با بلوتوث گوشی. فقط داخل نسخه‌ی APK کار می‌کند؛ اتصال، جفت‌سازی (pair) را هم خودش انجام می‌دهد.",
   webserial: "کابل USB به رایانه با کروم/اِج دسکتاپ — برای تست رومیزی با سرعت ۹۶۰۰.",
   websocket: "وصل شدن به یک پل سوکت (رایانه، ESP یا سرور) که خودش به دستگاه وصل است.",
 };
@@ -34,9 +34,11 @@ export function SettingsView() {
 
   /* ---- بلوتوث ---- */
   const [devices, setDevices] = useState<BtDevice[]>([]);
+  const [devicesKind, setDevicesKind] = useState<"paired" | "discover" | null>(null);
   const [btBusy, setBtBusy] = useState(false);
   const scan = async (mode: "paired" | "discover") => {
     setBtBusy(true);
+    setDevicesKind(mode);
     try {
       const list = mode === "paired" ? await btList() : await btDiscover();
       setDevices(list);
@@ -144,6 +146,14 @@ export function SettingsView() {
               <button type="button" className="btn small" disabled={btBusy} onClick={() => void scan("discover")}>
                 جستجو…
               </button>
+              <button type="button" className="btn small" data-testid="bt-open-settings" onClick={openBtSettings}>
+                تنظیمات بلوتوث گوشی
+              </button>
+            </div>
+            <div className="hint" style={{ marginTop: 8 }}>
+              {devicesKind === "discover"
+                ? "این لیست «جفت‌نشده‌ها»ست — «انتخاب» بزنید و بعد «اتصال»؛ اپ خودش جفت‌سازی را راه می‌اندازد (رمز معمول 1234)."
+                : "فهرست جفت‌شده‌ها — اتصال از همین‌جاست."}
             </div>
             {devices.length > 0 && (
               <div className="plist" style={{ marginTop: 10 }}>
@@ -152,6 +162,7 @@ export function SettingsView() {
                     <span className="pname">
                       {d.name}
                       <span className="pmeta">{d.id}</span>
+                      {devicesKind === "discover" && <span className="badge-mini">جفت‌نشده</span>}
                     </span>
                     <button
                       type="button"
@@ -323,8 +334,13 @@ export function SettingsView() {
           <b>مسیرهای امروز بدون سخت‌افزار</b>
           شبیه‌ساز برای یادگیری، وب‌سوکت برای پل‌های سفارشی، سریال USB برای تست با کابل.
         </div>
-        <div className="hint" style={{ marginTop: 8 }}>
-          نسخه ۱.۰.۰ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
+        <div className="hint" style={{ marginTop: 8 }} data-testid="creator">
+          نسخه ۱.۰.۲ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
+          <br />
+          سازنده:{" "}
+          <a href="https://amirlwf.ir" target="_blank" rel="noreferrer">
+            امیررضا لطفی
+          </a>
         </div>
       </section>
 

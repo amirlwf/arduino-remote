@@ -1,17 +1,18 @@
 /**
- * پچ cordova-plugin-bluetooth-serial برای اندروید ۱۲+ (API 31):
+ * پچ‌های cordova-plugin-bluetooth-serial برای این پروژه — ایدمپوتنت، بدون وابستگی.
  *
- * باگ: discoverUnpaired روی چک قدیمی ACCESS_COARSE_LOCATION گیر می‌کند.
- * مانیفست اپ این مجوز را با maxSdkVersion=30 ثبت کرده (روی ۱۲+ اصلاً وجود ندارد) →
- * requestPermission سیستم فوراً و بدون دیالوگ رد می‌کند → کاربر با وجود مجوز
- * «دستگاه‌های اطراف» (BLUETOOTH_SCAN) پیام «دسترسی ندارم» می‌گیرد.
+ * پچ ۱ — discover gate (اندروید ۱۲+):
+ *   باگ: discoverUnpaired روی چک قدیمی ACCESS_COARSE_LOCATION گیر می‌کرد؛ مانیفست این مجوز
+ *   را با maxSdkVersion=30 ثبت کرده (روی ۱۲+ اصلاً وجود ندارد) → requestPermission بدون دیالوگ
+ *   رد می‌شد → «دسترسی ندارم» با مجوزهای داده‌شده. روی API ≥ 31 از چک می‌پریم و جستجو با
+ *   BLUETOOTH_SCAN (درخواستی در MainActivity) انجام می‌شود.
  *
- * درمان: روی API ≥ 31 از چک موقعیت بپریم — جستجو با BLUETOOTH_SCAN که
- * MainActivity درخواست می‌کند و manifest با neverForLocation ثبت کرده انجام می‌شود.
+ * پچ ۲ تا ۵ — جفت‌سازی (pair):
+ *   اکشن جدید `pair` با BluetoothDevice.createBond (بازتاب) + گیرنده‌ی BOND_STATE_CHANGED،
+ *   در www هم متد pair اضافه می‌شود. بدون آن، اتصال به HC-05 جفت‌نشده با
+ *   «Unable to connect to device» شکست می‌خورد.
  *
- * ایدمپوتنت: اگر «PATCH(arduino-remote)» را دید دست نمی‌زند.
- * هم فایل node_modules و هم کپی پروژه‌ی android/ را پچ می‌کند.
- * اجرا: postinstall و android:sync (زنجیره‌ی npm)
+ * اجرا: postinstall و android:sync (زنجیره‌ی npm). هر تکه با نشان خودش شناسایی می‌شود.
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -19,17 +20,24 @@ import { fileURLToPath } from "node:url";
 
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-const REL_SRC = path.join("src", "android", "com", "megster", "cordova", "BluetoothSerial.java");
-const REL_APP = path.join("android", "capacitor-cordova-android-plugins", "src", "main", "java", "com", "megster", "cordova", "BluetoothSerial.java");
+const JAVA_TARGETS = [
+  path.join(root, "node_modules", "cordova-plugin-bluetooth-serial", "src", "android", "com", "megster", "cordova", "BluetoothSerial.java"),
+  path.join(root, "android", "capacitor-cordova-android-plugins", "src", "main", "java", "com", "megster", "cordova", "BluetoothSerial.java"),
+];
+const WWW_TARGETS = [
+  path.join(root, "node_modules", "cordova-plugin-bluetooth-serial", "www", "bluetoothSerial.js"),
+  path.join(root, "android", "app", "src", "main", "assets", "public", "plugins", "cordova-plugin-bluetooth-serial", "www", "bluetoothSerial.js"),
+];
 
-const OLD = `            if (cordova.hasPermission(ACCESS_COARSE_LOCATION)) {
+/* ---------------------------------------------- پچ ۱: درِ جستجوی اندروید ۱۲+ */
+const P1_OLD = `            if (cordova.hasPermission(ACCESS_COARSE_LOCATION)) {
                 discoverUnpairedDevices(callbackContext);
             } else {
                 permissionCallback = callbackContext;
                 cordova.requestPermission(this, CHECK_PERMISSIONS_REQ_CODE, ACCESS_COARSE_LOCATION);
             }`;
 
-const NEW = `            // PATCH(arduino-remote): Android 12+ (API 31) از BLUETOOTH_SCAN استفاده می‌کند؛
+const P1_NEW = `            // PATCH(arduino-remote): Android 12+ (API 31) از BLUETOOTH_SCAN استفاده می‌کند؛
             // ACCESS_COARSE_LOCATION با maxSdkVersion=30 در مانیفست نیست و requestPermission
             // بدون دیالوگ رد می‌شد → خطای «دسترسی ندارم» با مجوزهای داده‌شده.
             if (android.os.Build.VERSION.SDK_INT >= 31 || cordova.hasPermission(ACCESS_COARSE_LOCATION)) {
@@ -39,28 +47,139 @@ const NEW = `            // PATCH(arduino-remote): Android 12+ (API 31) از BLU
                 cordova.requestPermission(this, CHECK_PERMISSIONS_REQ_CODE, ACCESS_COARSE_LOCATION);
             }`;
 
-const MARK = "PATCH(arduino-remote)";
-const targets = [path.join(root, "node_modules", "cordova-plugin-bluetooth-serial", REL_SRC), path.join(root, REL_APP)];
+/* ---------------------------------------------- پچ ۲: ثابت اکشن pair */
+const P2_OLD = `    private static final String IS_CONNECTED = "isConnected";`;
+const P2_NEW = `    private static final String IS_CONNECTED = "isConnected";
+    // PATCH(arduino-remote-pair-const)
+    private static final String PAIR_DEVICE = "pair";`;
+
+/* ---------------------------------------------- پچ ۳: شاخه‌ی اکشن pair */
+const P3_OLD = `        } else if (action.equals(SET_DEVICE_DISCOVERED_LISTENER)) {`;
+const P3_NEW = `        } else if (action.equals(PAIR_DEVICE)) {
+            // PATCH(arduino-remote-pair-action)
+            pairDevice(args.getString(0), callbackContext);
+        } else if (action.equals(SET_DEVICE_DISCOVERED_LISTENER)) {`;
+
+/* ---------------------------------------------- پچ ۴: متد pairDevice */
+const P4_OLD = `    private void listBondedDevices(CallbackContext callbackContext) throws JSONException {`;
+const P4_NEW = `    // PATCH(arduino-remote-pair-method): جفت‌سازی از داخل اپ با createBond (بازتاب — متد @hide)
+    // نتیجه از رویداد BOND_STATE_CHANGED می‌آید؛ پنجره‌ی PIN را خود سیستم نشان می‌دهد.
+    private void pairDevice(final String address, final CallbackContext callbackContext) {
+        final boolean[] done = { false };
+        android.content.BroadcastReceiver receiver = null;
+        try {
+            final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+            if (device.getBondState() == BluetoothDevice.BOND_BONDED) {
+                callbackContext.success("paired");
+                return;
+            }
+            final android.content.BroadcastReceiver r = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context context, android.content.Intent intent) {
+                    BluetoothDevice d = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (d == null || !address.equalsIgnoreCase(d.getAddress())) {
+                        return;
+                    }
+                    int st = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    int prev = intent.getIntExtra(BluetoothDevice.EXTRA_PREVIOUS_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    if (st == BluetoothDevice.BOND_BONDED) {
+                        finish("paired");
+                    } else if (st == BluetoothDevice.BOND_NONE && prev == BluetoothDevice.BOND_BONDING) {
+                        finish(null);
+                    }
+                }
+
+                private void finish(String result) {
+                    if (done[0]) {
+                        return;
+                    }
+                    done[0] = true;
+                    try { cordova.getActivity().unregisterReceiver(this); } catch (Exception ignored) { }
+                    if (result != null) {
+                        callbackContext.success(result);
+                    } else {
+                        callbackContext.error("pairing-cancelled");
+                    }
+                }
+            };
+            receiver = r;
+            cordova.getActivity().registerReceiver(r, new android.content.IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    if (done[0]) {
+                        return;
+                    }
+                    done[0] = true;
+                    try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                    callbackContext.error("pair-timeout");
+                }
+            }, 60000);
+            java.lang.reflect.Method m = device.getClass().getMethod("createBond");
+            if (!Boolean.TRUE.equals(m.invoke(device))) {
+                if (!done[0]) {
+                    done[0] = true;
+                    try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                    callbackContext.error("createBond-rejected");
+                }
+            }
+        } catch (Exception e) {
+            if (receiver != null) {
+                try { cordova.getActivity().unregisterReceiver(receiver); } catch (Exception ignored) { }
+            }
+            if (!done[0]) {
+                done[0] = true;
+                callbackContext.error("pair-error: " + e.getMessage());
+            }
+        }
+    }
+
+    private void listBondedDevices(CallbackContext callbackContext) throws JSONException {`;
+
+/* ---------------------------------------------- پچ ۵: متد www */
+const P5_OLD = `    // Android only - see http://goo.gl/1mFjZY
+    connectInsecure: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "connectInsecure", [macAddress]);
+    },`;
+const P5_NEW = `    // Android only - see http://goo.gl/1mFjZY
+    connectInsecure: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "connectInsecure", [macAddress]);
+    },
+
+    // PATCH(arduino-remote-pair-www): جفت‌سازی (createBond) — پنجره‌ی PIN سیستم
+    pair: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "pair", [macAddress]);
+    },`;
+
+const PATCHES = [
+  { id: "discover-12", marker: "PATCH(arduino-remote): Android 12+", old: P1_OLD, new: P1_NEW, targets: JAVA_TARGETS },
+  { id: "pair-const", marker: "PATCH(arduino-remote-pair-const)", old: P2_OLD, new: P2_NEW, targets: JAVA_TARGETS },
+  { id: "pair-action", marker: "PATCH(arduino-remote-pair-action)", old: P3_OLD, new: P3_NEW, targets: JAVA_TARGETS },
+  { id: "pair-method", marker: "PATCH(arduino-remote-pair-method)", old: P4_OLD, new: P4_NEW, targets: JAVA_TARGETS },
+  { id: "pair-www", marker: "PATCH(arduino-remote-pair-www)", old: P5_OLD, new: P5_NEW, targets: WWW_TARGETS },
+];
 
 let patched = 0;
 let already = 0;
 let missing = 0;
 
-for (const file of targets) {
-  if (!fs.existsSync(file)) continue;
-  const src = fs.readFileSync(file, "utf8");
-  if (src.includes(MARK)) {
-    already++;
-    continue;
+for (const p of PATCHES) {
+  for (const file of p.targets) {
+    if (!fs.existsSync(file)) continue;
+    const src = fs.readFileSync(file, "utf8");
+    if (src.includes(p.marker)) {
+      already++;
+      continue;
+    }
+    if (!src.includes(p.old)) {
+      console.error(`bt-plugin patch [${p.id}]: الگو پیدا نشد (پلاگین به‌روز شده؟): ${file}`);
+      missing++;
+      process.exitCode = 1;
+      continue;
+    }
+    fs.writeFileSync(file, src.replace(p.old, p.new), "utf8");
+    patched++;
   }
-  if (!src.includes(OLD)) {
-    console.error(`bt-plugin patch: الگو پیدا نشد (پلاگین به‌روز شده؟): ${file}`);
-    missing++;
-    process.exitCode = 1;
-    continue;
-  }
-  fs.writeFileSync(file, src.replace(OLD, NEW), "utf8");
-  patched++;
 }
 
 console.log(`bt-plugin patch: ${patched} patched, ${already} already, ${missing} missing`);

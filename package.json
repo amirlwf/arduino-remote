@@ -1,7 +1,8 @@
 {
   "name": "arduino-remote",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "private": true,
+  "author": "امیررضا لطفی (https://amirlwf.ir)",
   "type": "module",
   "description": "ریموت کنترل دستگاه‌های آردوینو — TypeScript + React + Capacitor (Android)",
   "scripts": {

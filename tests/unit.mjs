@@ -17,7 +17,7 @@ import {
   parseImport,
 } from "../src/lib/storage.ts";
 import { createStore } from "../src/lib/store.ts";
-import { BluetoothTransport } from "../src/lib/transports/bluetooth.ts";
+import { BluetoothTransport, btConnect } from "../src/lib/transports/bluetooth.ts";
 import { DemoTransport } from "../src/lib/transports/demo.ts";
 import { WebSocketTransport } from "../src/lib/transports/websocket.ts";
 import { WebSerialTransport } from "../src/lib/transports/webserial.ts";
@@ -284,6 +284,56 @@ eq("log: پاک شد", getLogs().length, 0);
   eq("mgr: اکو", rx.join(","), "PING");
   await mgr.disconnect();
   eq("mgr: قطع", mgr.status, "disconnected");
+}
+
+/* ------------------------------------- bt: پل ساختگی (جفت‌سازی خودکار + fallback ناامن) */
+{
+  const bridge = {
+    list: null, pair: null, connect: null, connectInsecure: null,
+    disconnect: (s) => s && s(), write: (_d, ok) => ok(),
+    subscribe: () => {}, unsubscribe: () => {},
+    isConnected: (_ok, fail) => fail("no"), discoverUnpaired: (ok) => ok([]),
+  };
+  globalThis.bluetoothSerial = bridge;
+  const run = async () => {
+    try { await btConnect("AA:BB:CC:DD:EE:FF"); return null; }
+    catch (e) { return e; }
+  };
+  let calls = [];
+  let err;
+
+  // حالت ۱: جفت‌نشده → اول pair بعد connect
+  bridge.list = (ok) => ok([]);
+  bridge.pair = (_a, ok) => { calls.push("pair"); ok("paired"); };
+  bridge.connect = (_a, ok) => { calls.push("connect"); ok(); };
+  err = await run();
+  eq("bt: جفت‌نشده → pair سپس connect", err ? "THREW:" + err.message : JSON.stringify(calls), '["pair","connect"]');
+
+  // حالت ۲: جفت‌شده → بدون pair
+  calls = [];
+  bridge.list = (ok) => ok([{ address: "AA:BB:CC:DD:EE:FF", name: "HC-05" }]);
+  err = await run();
+  eq("bt: جفت‌شده → فقط connect", err ? "THREW:" + err.message : JSON.stringify(calls), '["connect"]');
+
+  // حالت ۳: اتصال امن شکست → تلاش ناامن
+  calls = [];
+  bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device"); };
+  bridge.connectInsecure = (_a, ok) => { calls.push("insecure"); ok(); };
+  err = await run();
+  eq("bt: fallback ناامن", err ? "THREW:" + err.message : JSON.stringify(calls), '["connect","insecure"]');
+
+  // حالت ۴: هر دو شکست → پیام راهنمای فارسی
+  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device"); };
+  err = await run();
+  check("bt: شکست کامل → پیام فارسی «اتصال برقرار نشد»", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
+
+  // حالت ۵: لغو جفت‌سازی → پیام فارسی
+  bridge.list = (ok) => ok([]);
+  bridge.pair = (_a, _ok, fail) => fail("pairing-cancelled");
+  err = await run();
+  check("bt: لغو جفت‌سازی → پیام فارسی", !!err && err.message.includes("جفت‌سازی لغو شد"), err ? err.message : "no throw");
+
+  delete globalThis.bluetoothSerial;
 }
 
 /* ============================================================ نتیجه */
