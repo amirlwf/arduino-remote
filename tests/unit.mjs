@@ -333,20 +333,22 @@ eq("log: پاک شد", getLogs().length, 0);
   err = await run();
   check("bt: لغو جفت‌سازی → پیام فارسی", !!err && err.message.includes("جفت‌سازی لغو شد"), err ? err.message : "no throw");
 
-  // حالت ۶: read failed (کلید کهنه) → بازسازی جفت و تلاش مجدد
+  // حالت ۶: read failed مداوم → چند دور تلاش + بازسازی جفت + وصل
   calls = [];
   bridge.list = (ok) => ok([{ address: "AA:BB:CC:DD:EE:FF", name: "HC-05" }]);
-  bridge.pair = (_a, ok) => { calls.push("pair"); ok("paired"); };
-  let firstConnect = true;
+  let canConnect = false;
+  bridge.pair = (_a, ok) => { calls.push("pair"); canConnect = true; ok("paired"); };
   bridge.connect = (_a, ok, fail) => {
     calls.push("connect");
-    if (firstConnect) { firstConnect = false; fail("Unable to connect to device: java.io.IOException: read failed"); }
-    else ok();
+    if (canConnect) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
   };
-  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: java.io.IOException: read failed"); };
+  bridge.connectInsecure = (_a, ok, fail) => {
+    calls.push("insecure");
+    if (canConnect) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
+  };
   err = await run();
-  eq("bt: read failed → بازسازی جفت و اتصال مجدد", err ? "THREW:" + err.message : JSON.stringify(calls),
-     '["connect","insecure","pair","connect"]');
+  eq("bt: چند دور + بازسازی جفت + وصل", err ? "THREW:" + err.message : JSON.stringify(calls),
+     '["connect","insecure","connect","insecure","connect","insecure","pair","connect"]');
 
   // حالت ۷: اتصال ردشده (بدون read failed) → بدون بازسازی پرتاب می‌شود
   calls = [];

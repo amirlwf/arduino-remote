@@ -159,6 +159,43 @@ function connectAttempt(b: BluetoothSerialBridge, addr: string, secure: boolean)
  * ۲) اتصال امن؛ اگر شکست خورد تلاش ناامن (SPP بدون باندینگ — رایج برای HC-05).
  * خطاها با friendlyBtError فارسی و قابل‌اقدام می‌شوند.
  */
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+function isResetError(e: Error): boolean {
+  return /read failed|Connection reset|socket closed|Broken pipe/i.test(e.message);
+}
+
+/** چند دور تلاش امن/ناامن با فاصله‌ی ۲ ثانیه — پنجره‌ی ریست ماژول را رد می‌کند */
+async function tryRounds(
+  b: BluetoothSerialBridge,
+  addr: string,
+  rounds: number
+): Promise<{ ok: boolean; lastErr: Error }> {
+  let lastErr: Error = new Error("connect-failed");
+  for (let i = 1; i <= rounds; i++) {
+    if (i > 1) {
+      logAppend("sys", `تلاش اتصال ${i}/${rounds} بعد از ۲ ثانیه…`);
+      await sleep(2000);
+    }
+    try {
+      await connectAttempt(b, addr, true);
+      return { ok: true, lastErr };
+    } catch (e) {
+      lastErr = e as Error;
+    }
+    try {
+      await connectAttempt(b, addr, false);
+      return { ok: true, lastErr };
+    } catch (e) {
+      lastErr = e as Error;
+    }
+    if (!isResetError(lastErr)) {
+      break; // خطای دیگر (مثلاً اشغال بودن) تکرارش بی‌فایده است
+    }
+  }
+  return { ok: false, lastErr };
+}
+
 export async function btConnect(address: string): Promise<void> {
   const b = getBridge();
   if (!b) throw new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)");
@@ -176,34 +213,29 @@ export async function btConnect(address: string): Promise<void> {
     throw new Error(friendlyBtError(e, "دستگاه جفت نشد — از تنظیمات بلوتوث گوشی جفت کنید (رمز 1234) و دوباره تلاش کنید"));
   }
 
-  // تلاش امن، بعد ناامن (SPP بدون باندینگ — رایج برای HC-05)
-  let lastErr: Error = new Error("connect-failed");
-  try {
-    await connectAttempt(b, addr, true);
-    return;
-  } catch (e) {
-    lastErr = e as Error;
-  }
-  try {
-    await connectAttempt(b, addr, false);
-    return;
-  } catch (e) {
-    lastErr = e as Error;
-  }
+  // نشست اولیه: ماژول بعد از جفت/تلاش چند ثانیه ریست می‌شود (LED خاموش می‌شود) —
+  // وصل کردن داخل این پنجره دقیقاً java.io.IOException: read failed می‌دهد
+  await sleep(1200);
 
-  // «read failed» یعنی کلید جفت کهنه/ناهماهنگ است → جفت را بازسازی کن و یک بار دیگر وصل شو
-  if (/read failed|Connection reset|socket closed|Broken pipe/i.test(lastErr.message)) {
+  // چند دور تلاش با فاصله تا پنجره‌ی خاموشی LED رد شود
+  let res = await tryRounds(b, addr, 3);
+
+  // اگر هنوز read failed بود → جفت کهنه را بازسازی کن و دو دور دیگر بزن
+  if (!res.ok && isResetError(res.lastErr)) {
     logAppend("sys", "خطای read failed — بازسازی جفت‌سازی (پاک‌کردن کلید کهنه)…");
     toast("کلید جفت کهنه پاک شد — دوباره ۱۲۳۴ را بزن تا جفت تازه ساخته شود", "err");
     try {
       await btPair(addr);
-      await connectAttempt(b, addr, true);
-      return;
+      await sleep(2000);
+      res = await tryRounds(b, addr, 2);
     } catch (e2) {
-      lastErr = e2 as Error;
+      res = { ok: false, lastErr: e2 as Error };
     }
   }
-  throw new Error(friendlyBtError(lastErr, "اتصال بلوتوث ناموفق بود"));
+
+  if (!res.ok) {
+    throw new Error(friendlyBtError(res.lastErr, "اتصال بلوتوث ناموفق بود"));
+  }
 }
 
 export function btDisconnect(): Promise<void> {
