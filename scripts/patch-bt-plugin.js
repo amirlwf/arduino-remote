@@ -399,6 +399,83 @@ const PATCHES = [
     },`,
     targets: WWW_TARGETS,
   },
+
+  /* پچ ۹ — chscan: خطای primary را نگه دار (قبلاً با خطای کانال‌۱ بازنویسی می‌شد)
+     + کانال‌های ۱ تا ۵ را امتحان کن (SPP معمولاً کانال ۱ نیست) */
+  {
+    id: "chscan",
+    marker: "PATCH(arduino-remote-chscan)",
+    old: `            // Make a connection to the BluetoothSocket
+            try {
+                // This is a blocking call and will only return on a successful connection or an exception
+                Log.i(TAG,"Connecting to socket...");
+                mmSocket.connect();
+                Log.i(TAG,"Connected");
+            } catch (IOException e) {
+                Log.e(TAG, e.toString());
+                lastConnectError = e.toString(); // PATCH(arduino-remote-diag-io)
+
+                // Some 4.1 devices have problems, try an alternative way to connect
+                // See https://github.com/don/BluetoothSerial/issues/89
+                try {
+                    Log.i(TAG,"Trying fallback...");
+                    mmSocket = (BluetoothSocket) mmDevice.getClass().getMethod("createRfcommSocket", new Class[] {int.class}).invoke(mmDevice,1);
+                    mmSocket.connect();
+                    Log.i(TAG,"Connected");
+                } catch (Exception e2) {
+                    Log.e(TAG, "Couldn't establish a Bluetooth connection.");
+                    lastConnectError = e2.toString(); // PATCH(arduino-remote-diag-e2)
+                    try {
+                        mmSocket.close();
+                    } catch (IOException e3) {
+                        Log.e(TAG, "unable to close() " + mSocketType + " socket during connection failure", e3);
+                    }
+                    connectionFailed();
+                    return;
+                }
+            }`,
+    new: `            // Make a connection to the BluetoothSocket
+            // PATCH(arduino-remote-chscan): ثبت خطای primary + اسکن کانال‌های ۱ تا ۵
+            try {
+                // This is a blocking call and will only return on a successful connection or an exception
+                Log.i(TAG,"Connecting to socket...");
+                mmSocket.connect();
+                Log.i(TAG,"Connected");
+                lastConnectError = null;
+            } catch (IOException e) {
+                Log.e(TAG, e.toString());
+                lastConnectError = "primary: " + e; // PATCH(arduino-remote-chscan-primary) PATCH(arduino-remote-diag-io)
+                try {
+                    mmSocket.close();
+                } catch (IOException ignored) {
+                }
+
+                boolean connectedOnChannel = false;
+                for (int ch = 1; ch <= 5 && !connectedOnChannel; ch++) {
+                    try {
+                        Log.i(TAG, "Trying fallback channel " + ch + "...");
+                        mmSocket = (BluetoothSocket) mmDevice.getClass().getMethod("createRfcommSocket", new Class[] {int.class}).invoke(mmDevice, ch);
+                        mmSocket.connect();
+                        connectedOnChannel = true;
+                        lastConnectError = null;
+                        Log.i(TAG, "Connected on channel " + ch);
+                    } catch (Exception e2) {
+                        lastConnectError += " | ch" + ch + ": " + e2;
+                        Log.e(TAG, "channel " + ch + " failed", e2); // PATCH(arduino-remote-diag-e2)
+                    }
+                }
+                if (!connectedOnChannel) {
+                    try {
+                        mmSocket.close();
+                    } catch (IOException e3) {
+                        Log.e(TAG, "unable to close() " + mSocketType + " socket during connection failure", e3);
+                    }
+                    connectionFailed();
+                    return;
+                }
+            }`,
+    targets: SERVICE_TARGETS,
+  },
 ];
 
 let patched = 0;
