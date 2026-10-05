@@ -490,6 +490,28 @@ const PATCHES = [
                         try { mmSocket.close(); } catch (IOException ignored) { } // PATCH(arduino-remote-chclose)`,
     targets: SERVICE_TARGETS,
   },
+
+  /* پچ ۱۱ — settle: لغو جستجو + استراحت کوتاه رادیو قبل از connect
+     (الهام از kai-morich/SimpleBluetoothTerminal: discovery دشمن RFCOMM است) */
+  {
+    id: "settle",
+    marker: "PATCH(arduino-remote-settle)",
+    old: `            // Always cancel discovery because it will slow down a connection
+            mAdapter.cancelDiscovery();
+
+            // Make a connection to the BluetoothSocket`,
+    new: `            // Always cancel discovery because it will slow down a connection
+            mAdapter.cancelDiscovery();
+            // PATCH(arduino-remote-settle): انتظار خروج رادیو از حالت inquiry قبل از connect
+            // (الهام از kai-morich/SimpleBluetoothTerminal — discovery دشمن RFCOMM است)
+            for (int i = 0; i < 6 && mAdapter.isDiscovering(); i++) {
+                try { Thread.sleep(100); } catch (InterruptedException ignored) { }
+            }
+            try { Thread.sleep(300); } catch (InterruptedException ignored) { }
+
+            // Make a connection to the BluetoothSocket`,
+    targets: SERVICE_TARGETS,
+  },
 ];
 
 let patched = 0;
