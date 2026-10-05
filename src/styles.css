@@ -301,3 +301,82 @@ a:hover {
   font-size: 10.5px;
   font-weight: 700;
 }
+
+
+/* جستجوی زنده + کارت دستگاه انتخاب‌شده */
+.scanprog {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 9px 12px;
+  border-radius: 12px;
+  background: rgba(52, 211, 153, 0.08);
+  color: #9ca3af;
+  font-size: 12.5px;
+}
+.spin {
+  width: 13px;
+  height: 13px;
+  border: 2px solid rgba(52, 211, 153, 0.25);
+  border-top-color: #34d399;
+  border-radius: 50%;
+  animation: spin-rot 0.8s linear infinite;
+  flex: none;
+}
+@keyframes spin-rot {
+  to { transform: rotate(360deg); }
+}
+.selcard {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 11px 13px;
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(52, 211, 153, 0.14), rgba(52, 211, 153, 0.05));
+  border: 1px solid rgba(52, 211, 153, 0.45);
+  margin-top: 10px;
+}
+.selicon {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  background: #34d399;
+  color: #06281c;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  flex: none;
+}
+.seltext {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.seltext b { font-size: 14px; }
+.selbadge {
+  font-size: 11px;
+  font-weight: 800;
+  color: #34d399;
+  background: rgba(52, 211, 153, 0.14);
+  border: 1px solid rgba(52, 211, 153, 0.4);
+  padding: 3px 9px;
+  border-radius: 999px;
+  flex: none;
+}
+.prow.is-sel {
+  border-color: rgba(52, 211, 153, 0.65);
+  background: rgba(52, 211, 153, 0.08);
+}
+.chip-sel {
+  display: inline-block;
+  margin-inline-start: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: #34d399;
+  color: #06281c;
+  font-size: 10.5px;
+  font-weight: 800;
+}

@@ -302,6 +302,103 @@ const PATCHES = [
             }`,
     targets: JAVA_TARGETS,
   },
+
+  /* پچ ۸ — unpair: فقط حذف جفت (removeBond) برای تلاش بدون رمزنگاری */
+  {
+    id: "unpair-const",
+    marker: "PATCH(arduino-remote-unpair-const)",
+    old: `    private static final String PAIR_DEVICE = "pair";`,
+    new: `    private static final String PAIR_DEVICE = "pair"; // PATCH(arduino-remote-pair-const)
+    private static final String UNPAIR_DEVICE = "unpair"; // PATCH(arduino-remote-unpair-const)`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "unpair-action",
+    marker: "PATCH(arduino-remote-unpair-action)",
+    old: `        } else if (action.equals(PAIR_DEVICE)) {
+            // PATCH(arduino-remote-pair-action)
+            pairDevice(args.getString(0), callbackContext);
+        } else if (action.equals(SET_DEVICE_DISCOVERED_LISTENER)) {`,
+    new: `        } else if (action.equals(PAIR_DEVICE)) {
+            // PATCH(arduino-remote-pair-action)
+            pairDevice(args.getString(0), callbackContext);
+        } else if (action.equals(UNPAIR_DEVICE)) {
+            // PATCH(arduino-remote-unpair-action)
+            unpairDevice(args.getString(0), callbackContext);
+        } else if (action.equals(SET_DEVICE_DISCOVERED_LISTENER)) {`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "unpair-method",
+    marker: "PATCH(arduino-remote-unpair-method)",
+    old: `    private void pairDevice(final String address, final CallbackContext callbackContext) {`,
+    new: `    // PATCH(arduino-remote-unpair-method): فقط حذف جفت (removeBond) — بدون ساخت جفت تازه
+    private void unpairDevice(final String address, final CallbackContext callbackContext) {
+        final boolean[] done = { false };
+        android.content.BroadcastReceiver receiver = null;
+        try {
+            final BluetoothDevice device = bluetoothAdapter.getRemoteDevice(address);
+            if (device.getBondState() != BluetoothDevice.BOND_BONDED) {
+                callbackContext.success("unpaired");
+                return;
+            }
+            final android.content.BroadcastReceiver r = new android.content.BroadcastReceiver() {
+                @Override
+                public void onReceive(android.content.Context context, android.content.Intent intent) {
+                    BluetoothDevice d = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    if (d == null || !address.equalsIgnoreCase(d.getAddress())) {
+                        return;
+                    }
+                    int st = intent.getIntExtra(BluetoothDevice.EXTRA_BOND_STATE, BluetoothDevice.BOND_NONE);
+                    if (st == BluetoothDevice.BOND_NONE && !done[0]) {
+                        done[0] = true;
+                        try { cordova.getActivity().unregisterReceiver(this); } catch (Exception ignored) { }
+                        callbackContext.success("unpaired");
+                    }
+                }
+            };
+            receiver = r;
+            cordova.getActivity().registerReceiver(r, new android.content.IntentFilter(BluetoothDevice.ACTION_BOND_STATE_CHANGED));
+            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(() -> {
+                if (done[0]) return;
+                done[0] = true;
+                try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                callbackContext.success("unpaired");
+            }, 8000);
+            java.lang.reflect.Method rm = device.getClass().getMethod("removeBond");
+            if (!Boolean.TRUE.equals(rm.invoke(device)) && !done[0]) {
+                done[0] = true;
+                try { cordova.getActivity().unregisterReceiver(r); } catch (Exception ignored) { }
+                callbackContext.success("unpaired");
+            }
+        } catch (Exception e) {
+            if (receiver != null) { try { cordova.getActivity().unregisterReceiver(receiver); } catch (Exception ignored) { } }
+            if (!done[0]) {
+                done[0] = true;
+                callbackContext.error("unpair-error: " + e.getMessage());
+            }
+        }
+    }
+
+    private void pairDevice(final String address, final CallbackContext callbackContext) {`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "unpair-www",
+    marker: "PATCH(arduino-remote-unpair-www)",
+    old: `    pair: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "pair", [macAddress]);
+    },`,
+    new: `    pair: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "pair", [macAddress]);
+    },
+
+    // PATCH(arduino-remote-unpair-www): فقط حذف جفت
+    unpair: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "unpair", [macAddress]);
+    },`,
+    targets: WWW_TARGETS,
+  },
 ];
 
 let patched = 0;

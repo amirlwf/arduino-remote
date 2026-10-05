@@ -25,6 +25,11 @@ interface BluetoothSerialBridge {
   discoverUnpaired(success: (devices: Array<Record<string, unknown>>) => void, failure: (err: unknown) => void): void;
   /** افزوده‌ی پچ این پروژه: جفت‌سازی با createBond (پنجره‌ی PIN سیستم) */
   pair?(device: string, success: (result: string) => void, failure: (err: unknown) => void): void;
+  /** افزوده‌ی پچ این پروژه: فقط حذف جفت (removeBond) */
+  unpair?(device: string, success: (result: string) => void, failure: (err: unknown) => void): void;
+  /** رویداد زنده‌ی هر دستگاه هنگام جستجو */
+  setDeviceDiscoveredListener?(notify: (device: Record<string, unknown>) => void): void;
+  clearDeviceDiscoveredListener?(): void;
   /** اتصال RFCOMM ناامن — پشتیبان برای دستگاه‌های جفت‌نشده مثل HC-05 */
   connectInsecure?(device: string, success: () => void, failure: (err: unknown) => void): void;
   showBluetoothSettings?(success: () => void, failure: (err: unknown) => void): void;
@@ -128,6 +133,41 @@ export function btPair(address: string): Promise<void> {
   });
 }
 
+/** فقط حذف جفت (removeBond) — برای تلاش اتصال بدون رمزنگاری مثل اپ‌های استاندارد */
+export function btUnpair(address: string): Promise<void> {
+  const b = getBridge();
+  if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)"));
+  if (typeof b.unpair !== "function") return Promise.resolve(); // پلاگین قدیمی — بی‌خیال بگذر
+  return new Promise((resolve, reject) => {
+    b.unpair!(
+      address.trim(),
+      () => resolve(),
+      (err) => reject(new Error(errText(err, "unpair-error")))
+    );
+  });
+}
+
+/** اشتراک رویداد زنده‌ی جستجو — خروجی: تابع لغو اشتراک */
+export function btOnFound(onDevice: (d: BtDevice) => void): () => void {
+  const b = getBridge();
+  if (!b || typeof b.setDeviceDiscoveredListener !== "function") return () => undefined;
+  try {
+    b.setDeviceDiscoveredListener!((raw) => {
+      const mapped = toDevices([raw]);
+      if (mapped[0]?.id) onDevice(mapped[0]);
+    });
+  } catch {
+    return () => undefined;
+  }
+  return () => {
+    try {
+      getBridge()?.clearDeviceDiscoveredListener?.();
+    } catch {
+      /* بی‌خیال */
+    }
+  };
+}
+
 /** باز کردن صفحه‌ی تنظیمات بلوتوث سیستم (برای جفت‌سازی دستی) */
 export function openBtSettings(): void {
   const b = getBridge();
@@ -154,9 +194,10 @@ function connectAttempt(b: BluetoothSerialBridge, addr: string, secure: boolean)
 }
 
 /**
- * اتصال با جفت‌سازی خودکار:
- * ۱) اگر دستگاه در فهرست جفت‌شده‌ها نیست، اول pair می‌زنیم (پنجره‌ی PIN سیستم).
- * ۲) اتصال امن؛ اگر شکست خورد تلاش ناامن (SPP بدون باندینگ — رایج برای HC-05).
+ * اتصال سه‌مرحله‌ای (طبق رفتار اپ‌های استاندارد که روی HC-05 جواب می‌دهند):
+ * ۱) بدون جفت و بدون رمزنگاری — اول RFCOMM ناامن، بعد امن، چند دور با فاصله.
+ * ۲) اگر read failed ماند: حذف جفت کهنه (unpair) و باز هم بدون جفت.
+ * ۳) آخرین راه: جفت‌سازی کامل (پنجره‌ی رمز ۱۲۳۴).
  * خطاها با friendlyBtError فارسی و قابل‌اقدام می‌شوند.
  */
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
@@ -178,13 +219,14 @@ async function tryRounds(
       await sleep(2000);
     }
     try {
-      await connectAttempt(b, addr, true);
+      // اول ناامن — حالت اپ‌های استاندارد (بدون رمزنگاری؛ HC-05 همین را می‌پذیرد)
+      await connectAttempt(b, addr, false);
       return { ok: true, lastErr };
     } catch (e) {
       lastErr = e as Error;
     }
     try {
-      await connectAttempt(b, addr, false);
+      await connectAttempt(b, addr, true);
       return { ok: true, lastErr };
     } catch (e) {
       lastErr = e as Error;
@@ -204,26 +246,29 @@ export async function btConnect(address: string): Promise<void> {
     throw new Error("آدرس دستگاه بلوتوث خالی است — از بخش تنظیمات انتخاب کنید");
   }
 
-  try {
-    const bonded = await btList();
-    if (!bonded.some((d) => d.id.toUpperCase() === addr.toUpperCase())) {
-      await btPair(addr);
-    }
-  } catch (e) {
-    throw new Error(friendlyBtError(e, "دستگاه جفت نشد — از تنظیمات بلوتوث گوشی جفت کنید (رمز 1234) و دوباره تلاش کنید"));
-  }
-
-  // نشست اولیه: ماژول بعد از جفت/تلاش چند ثانیه ریست می‌شود (LED خاموش می‌شود) —
+  // نشست اولیه: ماژول بعد از هر تلاش چند ثانیه ریست/پردازش می‌شود (LED خاموش می‌شود) —
   // وصل کردن داخل این پنجره دقیقاً java.io.IOException: read failed می‌دهد
-  await sleep(1200);
+  await sleep(1000);
 
   // چند دور تلاش با فاصله تا پنجره‌ی خاموشی LED رد شود
   let res = await tryRounds(b, addr, 3);
 
-  // اگر هنوز read failed بود → جفت کهنه را بازسازی کن و دو دور دیگر بزن
+  // مرحله ۲: کلید احتمالی کهنه را حذف کن و باز هم بدون جفت تلاش کن (حالت اپ استاندارد)
   if (!res.ok && isResetError(res.lastErr)) {
-    logAppend("sys", "خطای read failed — بازسازی جفت‌سازی (پاک‌کردن کلید کهنه)…");
-    toast("کلید جفت کهنه پاک شد — دوباره ۱۲۳۴ را بزن تا جفت تازه ساخته شود", "err");
+    logAppend("sys", "حذف جفت کهنه و تلاش بدون رمزنگاری (حالت اپ‌های استاندارد)…");
+    try {
+      await btUnpair(addr);
+    } catch {
+      /* چیزی برای حذف نبود */
+    }
+    await sleep(2000);
+    res = await tryRounds(b, addr, 2);
+  }
+
+  // مرحله ۳ (آخرین راه): جفت‌سازی کامل با پنجره‌ی رمز
+  if (!res.ok && isResetError(res.lastErr)) {
+    logAppend("sys", "آخرین راه: جفت‌سازی کامل با رمز ۱۲۳۴…");
+    toast("آخرین راه: جفت‌سازی با رمز ۱۲۳۴ — لطفاً تأیید کن", "err");
     try {
       await btPair(addr);
       await sleep(2000);

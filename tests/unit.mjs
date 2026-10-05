@@ -302,61 +302,53 @@ eq("log: پاک شد", getLogs().length, 0);
   let calls = [];
   let err;
 
-  // حالت ۱: جفت‌نشده → اول pair بعد connect
+  // حالت ۱: بدون جفت — بلافاصله اتصال (بدون پنجره‌ی رمز؛ ناامن اول)
   bridge.list = (ok) => ok([]);
-  bridge.pair = (_a, ok) => { calls.push("pair"); ok("paired"); };
   bridge.connect = (_a, ok) => { calls.push("connect"); ok(); };
-  err = await run();
-  eq("bt: جفت‌نشده → pair سپس connect", err ? "THREW:" + err.message : JSON.stringify(calls), '["pair","connect"]');
-
-  // حالت ۲: جفت‌شده → بدون pair
-  calls = [];
-  bridge.list = (ok) => ok([{ address: "AA:BB:CC:DD:EE:FF", name: "HC-05" }]);
-  err = await run();
-  eq("bt: جفت‌شده → فقط connect", err ? "THREW:" + err.message : JSON.stringify(calls), '["connect"]');
-
-  // حالت ۳: اتصال امن شکست → تلاش ناامن
-  calls = [];
-  bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device"); };
   bridge.connectInsecure = (_a, ok) => { calls.push("insecure"); ok(); };
   err = await run();
-  eq("bt: fallback ناامن", err ? "THREW:" + err.message : JSON.stringify(calls), '["connect","insecure"]');
+  eq("bt: اتصال مستقیم بدون جفت (ناامن اول)", err ? "THREW:" + err.message : JSON.stringify(calls), '["insecure"]');
 
-  // حالت ۴: هر دو شکست → پیام راهنمای فارسی
-  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device"); };
-  err = await run();
-  check("bt: شکست کامل → پیام فارسی «اتصال برقرار نشد»", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
-
-  // حالت ۵: لغو جفت‌سازی → پیام فارسی
-  bridge.list = (ok) => ok([]);
-  bridge.pair = (_a, _ok, fail) => fail("pairing-cancelled");
-  err = await run();
-  check("bt: لغو جفت‌سازی → پیام فارسی", !!err && err.message.includes("جفت‌سازی لغو شد"), err ? err.message : "no throw");
-
-  // حالت ۶: read failed مداوم → چند دور تلاش + بازسازی جفت + وصل
+  // حالت ۲: ناامن شکست → امن
   calls = [];
-  bridge.list = (ok) => ok([{ address: "AA:BB:CC:DD:EE:FF", name: "HC-05" }]);
-  let canConnect = false;
-  bridge.pair = (_a, ok) => { calls.push("pair"); canConnect = true; ok("paired"); };
-  bridge.connect = (_a, ok, fail) => {
-    calls.push("connect");
-    if (canConnect) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
-  };
-  bridge.connectInsecure = (_a, ok, fail) => {
-    calls.push("insecure");
-    if (canConnect) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
-  };
+  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("x"); };
   err = await run();
-  eq("bt: چند دور + بازسازی جفت + وصل", err ? "THREW:" + err.message : JSON.stringify(calls),
-     '["connect","insecure","connect","insecure","connect","insecure","pair","connect"]');
+  eq("bt: fallback به امن", err ? "THREW:" + err.message : JSON.stringify(calls), '["insecure","connect"]');
 
-  // حالت ۷: اتصال ردشده (بدون read failed) → بدون بازسازی پرتاب می‌شود
+  // حالت ۳: اشغال (refused) → بدون حذف/جفت پرتاب می‌شود
   calls = [];
   bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device: Connection refused"); };
   bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: Connection refused"); };
   err = await run();
-  eq("bt: اتصال اشغال فقط دو تلاش — بدون pair دوم", JSON.stringify(calls), '["connect","insecure"]');
-  check("bt: اتصال اشغال پرتاب شد", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
+  eq("bt: refused فقط یک دور — بدون unpair/pair", JSON.stringify(calls), '["insecure","connect"]');
+  check("bt: refused پرتاب شد", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
+
+  // حالت ۴: read failed مداوم → مرحله ۲ (unpair) → مرحله ۳ (pair) → وصل
+  calls = [];
+  let paired = false;
+  bridge.connect = (_a, ok, fail) => {
+    calls.push("connect");
+    if (paired) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
+  };
+  bridge.connectInsecure = (_a, ok, fail) => {
+    calls.push("insecure");
+    if (paired) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
+  };
+  bridge.unpair = (_a, ok) => { calls.push("unpair"); ok("unpaired"); };
+  bridge.pair = (_a, ok) => { calls.push("pair"); paired = true; ok("paired"); };
+  err = await run();
+  eq("bt: سه‌مرحله (بدون جفت → unpair → جفت) وصل شد", err ? "THREW:" + err.message : JSON.stringify(calls),
+     '["insecure","connect","insecure","connect","insecure","connect","unpair","insecure","connect","insecure","connect","pair","insecure"]');
+
+  // حالت ۵: لغو جفت در مرحلهٔ آخر → پیام فارسی + ترتیب unpair سپس pair
+  calls = [];
+  paired = false;
+  bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device: java.io.IOException: read failed"); };
+  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: java.io.IOException: read failed"); };
+  bridge.pair = (_a, _ok, fail) => { calls.push("pair"); fail("pairing-cancelled"); };
+  err = await run();
+  check("bt: لغو جفت مرحلهٔ آخر → پیام فارسی", !!err && err.message.includes("جفت‌سازی لغو شد"), err ? err.message : "no throw");
+  check("bt: unpair قبل از pair", calls.includes("unpair") && calls.indexOf("unpair") < calls.indexOf("pair"), JSON.stringify(calls));
 
   delete globalThis.bluetoothSerial;
 }

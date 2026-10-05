@@ -82,7 +82,7 @@ export function defaultState(): AppState {
     version: 1,
     profiles: [profile],
     activeProfileId: profile.id,
-    transport: { kind: "demo", wsUrl: "ws://192.168.1.10:81", btAddress: "" },
+    transport: { kind: "demo", wsUrl: "ws://192.168.1.10:81", btAddress: "", btName: "" },
   };
 }
 
@@ -202,6 +202,7 @@ export function normalizeState(x: unknown): AppState | null {
       kind,
       wsUrl: str(t.wsUrl, "ws://192.168.1.10:81"),
       btAddress: str(t.btAddress),
+      btName: str(t.btName),
     },
   };
 }

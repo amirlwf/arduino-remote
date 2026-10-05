@@ -69,6 +69,8 @@ export interface TransportConfig {
   wsUrl: string;
   /** آدرس/شناسه‌ی دستگاه بلوتوث — خالی = آخرین مورد واردشده */
   btAddress: string;
+  /** نام نمایشی دستگاه انتخاب‌شده (برای UI انتخاب) */
+  btName?: string;
 }
 
 export interface AppState {

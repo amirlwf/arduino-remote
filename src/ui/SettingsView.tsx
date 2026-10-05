@@ -5,7 +5,7 @@ import { getManager } from "../lib/connection.ts";
 import { exportJson } from "../lib/storage.ts";
 import { toast } from "../lib/toast.ts";
 import { TRANSPORT_LABELS, type Profile, type TransportKind } from "../lib/types.ts";
-import { btAvailable, btDiscover, btList, openBtSettings, type BtDevice } from "../lib/transports/bluetooth.ts";
+import { btAvailable, btDiscover, btList, btOnFound, openBtSettings, type BtDevice } from "../lib/transports/bluetooth.ts";
 
 const KIND_ICON: Record<TransportKind, string> = {
   demo: "🎮",
@@ -16,7 +16,7 @@ const KIND_ICON: Record<TransportKind, string> = {
 
 const KIND_DESC: Record<TransportKind, string> = {
   demo: "بدون سخت‌افزار — برای یادگیری و تست. هر دستور بلافاصله به‌صورت پیام دریافتی برمی‌گردد.",
-  bluetooth: "اتصال مستقیم به HC-05 با بلوتوث گوشی. فقط داخل نسخه‌ی APK کار می‌کند؛ اتصال، جفت‌سازی (pair) را هم خودش انجام می‌دهد.",
+  bluetooth: "اتصال مستقیم به HC-05 با بلوتوث گوشی. فقط داخل APK؛ اول بدون جفت وصل می‌شود و در صورت نیاز جفت‌سازی (رمز 1234) را خودش پیشنهاد می‌دهد.",
   webserial: "کابل USB به رایانه با کروم/اِج دسکتاپ — برای تست رومیزی با سرعت ۹۶۰۰.",
   websocket: "وصل شدن به یک پل سوکت (رایانه، ESP یا سرور) که خودش به دستگاه وصل است.",
 };
@@ -36,16 +36,33 @@ export function SettingsView() {
   const [devices, setDevices] = useState<BtDevice[]>([]);
   const [devicesKind, setDevicesKind] = useState<"paired" | "discover" | null>(null);
   const [btBusy, setBtBusy] = useState(false);
+  const [scanSec, setScanSec] = useState(0);
   const scan = async (mode: "paired" | "discover") => {
     setBtBusy(true);
     setDevicesKind(mode);
+    setScanSec(0);
+    const live = new Map<string, BtDevice>();
+    let stop: (() => void) | undefined;
+    let timer: number | undefined;
     try {
+      if (mode === "discover") {
+        // نتایج زنده — دیگر ۱۲ ثانیه صفحه خالی نمی‌ماند
+        stop = btOnFound((d) => {
+          live.set(d.id, d);
+          setDevices([...live.values()]);
+        });
+        timer = window.setInterval(() => setScanSec((s) => s + 1), 1000);
+      }
       const list = mode === "paired" ? await btList() : await btDiscover();
-      setDevices(list);
-      if (list.length === 0) toast("دستگاهی پیدا نشد", "err");
+      for (const d of list) live.set(d.id, d);
+      const merged = [...live.values()];
+      setDevices(merged);
+      if (merged.length === 0) toast("دستگاهی پیدا نشد", "err");
     } catch (e) {
       toast(e instanceof Error ? e.message : String(e), "err");
     } finally {
+      if (timer !== undefined) window.clearInterval(timer);
+      stop?.();
       setBtBusy(false);
     }
   };
@@ -139,6 +156,16 @@ export function SettingsView() {
                 onChange={(e) => store.setTransport({ btAddress: e.target.value })}
               />
             </div>
+            {transport.btAddress !== "" && (
+              <div className="selcard" data-testid="bt-selected">
+                <span className="selicon">✓</span>
+                <span className="seltext">
+                  <b>{transport.btName || "دستگاه انتخاب‌شده"}</b>
+                  <span className="pmeta">{transport.btAddress}</span>
+                </span>
+                <span className="selbadge">در حال استفاده</span>
+              </div>
+            )}
             <div className="rowbtns">
               <button type="button" className="btn small" disabled={btBusy} onClick={() => void scan("paired")}>
                 دستگاه‌های جفت‌شده
@@ -152,27 +179,41 @@ export function SettingsView() {
             </div>
             <div className="hint" style={{ marginTop: 8 }}>
               {devicesKind === "discover"
-                ? "این لیست «جفت‌نشده‌ها»ست — «انتخاب» بزنید و بعد «اتصال»؛ اپ خودش جفت‌سازی را راه می‌اندازد (رمز معمول 1234)."
+                ? "لیست جستجو زنده است — «انتخاب» بزنید؛ اول بدون جفت وصل می‌شود و فقط در صورت نیاز جفت‌سازی (رمز 1234) را پیشنهاد می‌دهد."
                 : "فهرست جفت‌شده‌ها — اتصال از همین‌جاست."}
             </div>
+            {btBusy && devicesKind === "discover" && (
+              <div className="scanprog" data-testid="scan-progress">
+                <span className="spin" />
+                در حال جستجو… {scanSec}ثانیه — دستگاه‌ها همین‌جا ظاهر می‌شوند ({devices.length} تا)
+              </div>
+            )}
             {devices.length > 0 && (
               <div className="plist" style={{ marginTop: 10 }}>
-                {devices.map((d) => (
-                  <div key={d.id} className="prow">
-                    <span className="pname">
-                      {d.name}
-                      <span className="pmeta">{d.id}</span>
-                      {devicesKind === "discover" && <span className="badge-mini">جفت‌نشده</span>}
-                    </span>
-                    <button
-                      type="button"
-                      className="btn small"
-                      onClick={() => store.setTransport({ btAddress: d.id })}
-                    >
-                      انتخاب
-                    </button>
-                  </div>
-                ))}
+                {devices.map((d) => {
+                  const isSel = transport.btAddress === d.id;
+                  return (
+                    <div key={d.id} className={"prow" + (isSel ? " is-sel" : "")}>
+                      <span className="pname">
+                        {d.name}
+                        <span className="pmeta">{d.id}</span>
+                        {isSel && <span className="chip-sel">✓ انتخاب‌شده</span>}
+                        {devicesKind === "discover" && !isSel && <span className="badge-mini">جفت‌نشده</span>}
+                      </span>
+                      <button
+                        type="button"
+                        className="btn small"
+                        disabled={isSel}
+                        onClick={() => {
+                          store.setTransport({ btAddress: d.id, btName: d.name });
+                          toast("دستگاه انتخاب شد: " + d.name, "ok");
+                        }}
+                      >
+                        {isSel ? "✓ انتخاب‌شده" : "انتخاب"}
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
             )}
             {!btAvailable() && (
@@ -335,7 +376,7 @@ export function SettingsView() {
           شبیه‌ساز برای یادگیری، وب‌سوکت برای پل‌های سفارشی، سریال USB برای تست با کابل.
         </div>
         <div className="hint" style={{ marginTop: 8 }} data-testid="creator">
-          نسخه ۱.۰.۵ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
+          نسخه ۱.۰.۶ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
           <br />
           سازنده:{" "}
           <a href="https://amirlwf.ir" target="_blank" rel="noreferrer">
