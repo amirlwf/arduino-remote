@@ -462,6 +462,7 @@ const PATCHES = [
                     } catch (Exception e2) {
                         lastConnectError += " | ch" + ch + ": " + e2;
                         Log.e(TAG, "channel " + ch + " failed", e2); // PATCH(arduino-remote-diag-e2)
+                        try { mmSocket.close(); } catch (IOException ignored) { } // PATCH(arduino-remote-chclose)
                     }
                 }
                 if (!connectedOnChannel) {
@@ -474,6 +475,19 @@ const PATCHES = [
                     return;
                 }
             }`,
+    targets: SERVICE_TARGETS,
+  },
+
+  /* پچ ۱۰ — chclose: سوکت هر کانالِ شکست‌خورده باید بسته شود
+     (نشت سوکت = EOF همه‌ی تلاش‌های بعدی روی همان ACL) */
+  {
+    id: "chclose",
+    marker: "PATCH(arduino-remote-chclose)",
+    old: `                        lastConnectError += " | ch" + ch + ": " + e2;
+                        Log.e(TAG, "channel " + ch + " failed", e2); // PATCH(arduino-remote-diag-e2)`,
+    new: `                        lastConnectError += " | ch" + ch + ": " + e2;
+                        Log.e(TAG, "channel " + ch + " failed", e2); // PATCH(arduino-remote-diag-e2)
+                        try { mmSocket.close(); } catch (IOException ignored) { } // PATCH(arduino-remote-chclose)`,
     targets: SERVICE_TARGETS,
   },
 ];
