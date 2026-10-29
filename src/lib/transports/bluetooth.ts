@@ -1,10 +1,15 @@
 /**
- * انتقال بلوتوث کلاسیک (HC-05 / HC-06) از طریق پل Cordova.
+ * انتقال بلوتوث کلاسیک (HC-05 / HC-06) — روی پل نیتیو جاوای اختصاصی این پروژه
+ * (BtSerialPlugin — android/app/.../BtSerialPlugin.java).
+ *
+ * الگوی اتصال از kai-morich/SimpleBluetoothTerminal (اپی که روی HC-05 واقعاً جواب می‌دهد):
+ *   سوکت مستقیم: اول SPP UUID، در خطا fallback به کانال‌های ۱..۳ (بدون رمزنگاری) —
+ *   همه در سمت جاوا؛ اینجا فقط نردبان تلاش، watchdog و پیام‌های فارسی.
  *
  * واقعیت مهم: مرورگرها بلوتوث کلاسیک (SPP) را در اختیار صفحه‌وب نمی‌گذارند؛
- * این مسیر فقط داخل وب‌ویوی اپ اندرویدی (که با این پروژه ساخته می‌شود) کار می‌کند.
- * پس این فایل هم لایه‌ی اصلی محصول است، هم تست «نبودن پل» در node دارد.
+ * این مسیر فقط داخل وب‌ویوی اپ اندرویدی کار می‌کند.
  */
+import { Capacitor, registerPlugin, type PluginListenerHandle } from "@capacitor/core";
 import { logAppend } from "../log.ts";
 import { toast } from "../toast.ts";
 import { Transport, type TransportEvents } from "./transport.ts";
@@ -14,40 +19,69 @@ export interface BtDevice {
   name: string;
 }
 
-interface BluetoothSerialBridge {
-  connect(deviceId: string, success: () => void, failure: (err: unknown) => void): void;
-  disconnect(success?: () => void, failure?: (err: unknown) => void): void;
-  write(data: string, success: () => void, failure: (err: unknown) => void): void;
-  subscribe(delimiter: string, success: (data: string) => void, failure: (err: unknown) => void): void;
-  unsubscribe(success?: () => void, failure?: (err: unknown) => void): void;
-  isConnected(success: () => void, failure: (err: unknown) => void): void;
-  list(success: (devices: Array<Record<string, unknown>>) => void, failure: (err: unknown) => void): void;
-  discoverUnpaired(success: (devices: Array<Record<string, unknown>>) => void, failure: (err: unknown) => void): void;
-  /** افزوده‌ی پچ این پروژه: جفت‌سازی با createBond (پنجره‌ی PIN سیستم) */
-  pair?(device: string, success: (result: string) => void, failure: (err: unknown) => void): void;
-  /** افزوده‌ی پچ این پروژه: فقط حذف جفت (removeBond) */
-  unpair?(device: string, success: (result: string) => void, failure: (err: unknown) => void): void;
-  /** رویداد زنده‌ی هر دستگاه هنگام جستجو */
-  setDeviceDiscoveredListener?(notify: (device: Record<string, unknown>) => void): void;
-  clearDeviceDiscoveredListener?(): void;
-  /** اتصال RFCOMM ناامن — پشتیبان برای دستگاه‌های جفت‌نشده مثل HC-05 */
-  connectInsecure?(device: string, success: () => void, failure: (err: unknown) => void): void;
-  showBluetoothSettings?(success: () => void, failure: (err: unknown) => void): void;
-  /** افزوده‌ی پچ این پروژه: رویداد دائمی قطع‌شدن اتصال وسط نشست (خاموشی ماژول، خروج از رنج) */
-  setConnectionLostListener?(notify: (message: string) => void): void;
-  clearConnectionLostListener?(): void;
+interface BtDeviceEvent {
+  id?: string;
+  address?: string;
+  name?: string;
 }
 
-export function getBridge(): BluetoothSerialBridge | undefined {
-  return (globalThis as { bluetoothSerial?: BluetoothSerialBridge }).bluetoothSerial;
+interface BtSerialPlugin {
+  list(): Promise<{ devices: BtDeviceEvent[] }>;
+  startDiscovery(): Promise<void>;
+  stopDiscovery(): Promise<void>;
+  pair(options: { address: string }): Promise<void>;
+  unpair(options: { address: string }): Promise<void>;
+  connect(options: { address: string }): Promise<void>;
+  write(options: { data: string }): Promise<void>;
+  disconnect(): Promise<void>;
+  openSettings(): Promise<void>;
+  addListener(
+    eventName: "data",
+    cb: (e: { text: string }) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(
+    eventName: "connectionLost",
+    cb: (e: { message: string }) => void
+  ): Promise<PluginListenerHandle>;
+  addListener(eventName: "deviceFound", cb: (e: BtDeviceEvent) => void): Promise<PluginListenerHandle>;
+  addListener(eventName: "discoveryFinished", cb: () => void): Promise<PluginListenerHandle>;
+}
+
+const webOnlyError = (): never => {
+  throw new Error("پل بلوتوث کلاسیک فقط داخل APK اندروید کار می‌کند");
+};
+
+const BtSerialNative = registerPlugin<BtSerialPlugin>("BtSerial", {
+  web: {
+    list: async () => webOnlyError(),
+    startDiscovery: async () => webOnlyError(),
+    stopDiscovery: async () => webOnlyError(),
+    pair: async () => webOnlyError(),
+    unpair: async () => webOnlyError(),
+    connect: async () => webOnlyError(),
+    write: async () => webOnlyError(),
+    disconnect: async () => webOnlyError(),
+    openSettings: async () => webOnlyError(),
+    addListener: async () => webOnlyError(),
+  },
+});
+
+/** پل فعال — در تست‌ها با setBtSerialForTests جایگزین می‌شود */
+let bt: BtSerialPlugin = BtSerialNative;
+let testImplActive = false;
+
+/** فقط برای تست — پل ساختگی بگذار / برگردان */
+export function setBtSerialForTests(impl: BtSerialPlugin | null): void {
+  bt = impl ?? BtSerialNative;
+  testImplActive = impl !== null;
 }
 
 export function btAvailable(): boolean {
-  return getBridge() !== undefined;
+  return testImplActive || Capacitor.isNativePlatform();
 }
 
 /**
- * خطای مجوز را از پیام خام انگلیسی پلاگین تشخیص می‌دهد و به فارسیِ قابل‌اقدام تبدیل می‌کند.
+ * خطای مجوز را از پیام خام پلاگین تشخیص می‌دهد و به فارسیِ قابل‌اقدام تبدیل می‌کند.
  * پیام خام در کنسول می‌ماند تا عیب‌یابی از دست نرود.
  */
 function friendlyBtError(err: unknown, fallback: string): string {
@@ -61,7 +95,7 @@ function friendlyBtError(err: unknown, fallback: string): string {
       "«دستگاه‌های اطراف» (اندروید ۱۲+) یا «موقعیت مکانی» (اندروید قدیمی‌تر) را فعال کنید و دوباره تلاش کنید"
     );
   }
-  if (/unable to connect|connection attempt|connect-failed/i.test(raw)) {
+  if (/unable to connect|connect-failed|invalid bluetooth mac/i.test(raw)) {
     console.warn("[bt] connect error:", raw);
     return (
       "اتصال برقرار نشد — چک کنید: ۱) جفت (pair) شده باشد ۲) به اپ یا کامپیوتر دیگری وصل نباشد " +
@@ -69,10 +103,10 @@ function friendlyBtError(err: unknown, fallback: string): string {
       "۴) بعد از قطع اتصال دستگاه دیگر ۲ ثانیه صبر و دوباره بزنید — جزئیات خام در تب کنسول (✕)"
     );
   }
-  if (/pairing-cancelled/i.test(raw)) return "جفت‌سازی لغو شد — رمز پیش‌فرض معمول HC-05 عدد 1234 است";
   if (/not connected/i.test(raw)) {
     return "اتصال برقرار نیست — ماژول خاموش شده یا از رنج خارج شده؛ دوباره وصل شو (جزئیات در تب کنسول)";
   }
+  if (/pairing-cancelled/i.test(raw)) return "جفت‌سازی لغو شد — رمز پیش‌فرض معمول HC-05 عدد 1234 است";
   if (/pair-timeout/i.test(raw)) return "جفت‌سازی بیش از حد طول کشید — ماژول را روشن و نزدیک گوشی نگه دارید و دوباره تلاش کنید";
   if (/createBond-rejected|pair-error/i.test(raw)) {
     console.warn("[bt] pair error:", raw);
@@ -91,8 +125,8 @@ function errText(err: unknown, fallback: string): string {
   return fallback;
 }
 
-function toDevices(raw: Array<Record<string, unknown>>): BtDevice[] {
-  return raw.map((d) => {
+function toDevices(events: BtDeviceEvent[]): BtDevice[] {
+  return events.map((d) => {
     const address = typeof d.address === "string" ? d.address : typeof d.id === "string" ? d.id : "";
     const name = typeof d.name === "string" && d.name !== "" ? d.name : "بدون نام";
     return { id: address, name };
@@ -100,131 +134,110 @@ function toDevices(raw: Array<Record<string, unknown>>): BtDevice[] {
 }
 
 /** دستگاه‌های جفت‌شده */
-export function btList(): Promise<BtDevice[]> {
-  const b = getBridge();
-  if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)"));
-  return new Promise((resolve, reject) => {
-    b.list(
-      (devices) => resolve(toDevices(devices)),
-      (err) => reject(new Error(friendlyBtError(err, "خواندن فهرست دستگاه‌ها ناموفق بود")))
-    );
-  });
+export async function btList(): Promise<BtDevice[]> {
+  try {
+    const res = await bt.list();
+    return toDevices(res?.devices ?? []);
+  } catch (e) {
+    throw new Error(friendlyBtError(e, "خواندن فهرست دستگاه‌ها ناموفق بود"));
+  }
 }
 
-/** جستجوی دستگاه‌های جفت‌نشده (نیازمند مجوزهای بلوتوث اندروید ۱۲+) */
+/**
+ * جستجوی دستگاه‌های اطراف — با رویداد زنده‌ی deviceFound؛
+ * Promise وقتی resolve می‌شود که discovery تمام شود (سقف ۲۰ ثانیه).
+ */
 export function btDiscover(): Promise<BtDevice[]> {
-  const b = getBridge();
-  if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)"));
-  return new Promise((resolve, reject) => {
-    b.discoverUnpaired(
-      (devices) => resolve(toDevices(devices)),
-      (err) => reject(new Error(friendlyBtError(err, "جستجو ناموفق بود — بلوتوث را روشن کنید")))
+  return new Promise<BtDevice[]>((resolve, reject) => {
+    const found = new Map<string, BtDevice>();
+    let done = false;
+    const subs: Array<Promise<PluginListenerHandle>> = [];
+    const finish = (err?: unknown): void => {
+      if (done) return;
+      done = true;
+      for (const s of subs) void s.then((h) => h.remove()).catch(() => undefined);
+      clearTimeout(cap);
+      if (err) reject(err);
+      else resolve([...found.values()]);
+    };
+    const cap = setTimeout(() => finish(), 20_000);
+    subs.push(
+      bt.addListener("deviceFound", (e) => {
+        const list = toDevices([e]);
+        if (list[0]?.id) found.set(list[0].id, list[0]);
+      })
     );
+    subs.push(bt.addListener("discoveryFinished", () => finish()));
+    bt.startDiscovery().catch((e) => finish(new Error(friendlyBtError(e, "جستجو ناموفق بود — بلوتوث را روشن کنید"))));
   });
 }
 
 /** جفت‌سازی (createBond) — پنجره‌ی PIN سیستم را باز می‌کند؛ رمز پیش‌فرض HC-05: 1234 */
-export function btPair(address: string): Promise<void> {
-  const b = getBridge();
-  if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)"));
-  if (typeof b.pair !== "function") {
-    return Promise.reject(new Error("این نسخه از پلاگین جفت‌سازی ندارد — از تنظیمات بلوتوث گوشی جفت کنید (رمز 1234)"));
+export async function btPair(address: string): Promise<void> {
+  try {
+    await bt.pair({ address: address.trim() });
+  } catch (e) {
+    throw new Error(errText(e, "pair-error"));
   }
-  return new Promise((resolve, reject) => {
-    b.pair!(
-      address.trim(),
-      () => resolve(),
-      (err) => reject(new Error(errText(err, "pair-error")))
-    );
-  });
 }
 
 /** فقط حذف جفت (removeBond) — برای تلاش اتصال بدون رمزنگاری مثل اپ‌های استاندارد */
-export function btUnpair(address: string): Promise<void> {
-  const b = getBridge();
-  if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)"));
-  if (typeof b.unpair !== "function") return Promise.resolve(); // پلاگین قدیمی — بی‌خیال بگذر
-  return new Promise((resolve, reject) => {
-    b.unpair!(
-      address.trim(),
-      () => resolve(),
-      (err) => reject(new Error(errText(err, "unpair-error")))
-    );
-  });
+export async function btUnpair(address: string): Promise<void> {
+  try {
+    await bt.unpair({ address: address.trim() });
+  } catch {
+    /* چیزی برای حذف نبود — بی‌خیال */
+  }
 }
 
-/** اشتراک رویداد زنده‌ی جستجو — خروجی: تابع لغو اشتراک */
+/** رویداد زنده‌ی «دستگاه پیدا شد» حین جستجو — خروجی: تابع لغو اشتراک */
 export function btOnFound(onDevice: (d: BtDevice) => void): () => void {
-  const b = getBridge();
-  if (!b || typeof b.setDeviceDiscoveredListener !== "function") return () => undefined;
-  try {
-    b.setDeviceDiscoveredListener!((raw) => {
-      const mapped = toDevices([raw]);
-      if (mapped[0]?.id) onDevice(mapped[0]);
-    });
-  } catch {
-    return () => undefined;
-  }
+  let handle: PluginListenerHandle | null = null;
+  void bt
+    .addListener("deviceFound", (e) => {
+      const list = toDevices([e]);
+      if (list[0]?.id) onDevice(list[0]);
+    })
+    .then((h) => {
+      handle = h;
+    })
+    .catch(() => undefined);
   return () => {
-    try {
-      getBridge()?.clearDeviceDiscoveredListener?.();
-    } catch {
-      /* بی‌خیال */
-    }
+    const h = handle;
+    handle = null;
+    if (h) void h.remove().catch(() => undefined);
   };
 }
 
 /** رویداد دائمی «اتصال قطع شد» از سمت ماژول — خروجی: تابع لغو اشتراک */
 export function btOnConnectionLost(onLost: (message: string) => void): () => void {
-  const b = getBridge();
-  if (!b || typeof b.setConnectionLostListener !== "function") return () => undefined;
-  try {
-    b.setConnectionLostListener!((message) => {
-      if (typeof message === "string" && message !== "") onLost(message);
-    });
-  } catch {
-    return () => undefined;
-  }
+  let handle: PluginListenerHandle | null = null;
+  void bt
+    .addListener("connectionLost", (e) => {
+      if (typeof e?.message === "string" && e.message !== "") onLost(e.message);
+    })
+    .then((h) => {
+      handle = h;
+    })
+    .catch(() => undefined);
   return () => {
-    try {
-      getBridge()?.clearConnectionLostListener?.();
-    } catch {
-      /* بی‌خیال */
-    }
+    const h = handle;
+    handle = null;
+    if (h) void h.remove().catch(() => undefined);
   };
 }
 
 /** باز کردن صفحه‌ی تنظیمات بلوتوث سیستم (برای جفت‌سازی دستی) */
 export function openBtSettings(): void {
-  const b = getBridge();
-  if (!b || typeof b.showBluetoothSettings !== "function") return;
-  try {
-    b.showBluetoothSettings!(() => undefined, () => undefined);
-  } catch {
-    /* پل در دسترس نیست */
-  }
-}
-
-/** یک تلاش اتصال (امن یا ناامن) */
-function connectAttempt(b: BluetoothSerialBridge, addr: string, secure: boolean): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const fail = (err: unknown) => reject(new Error(errText(err, "connect-failed")));
-    if (secure) {
-      b.connect(addr, () => resolve(), fail);
-    } else if (typeof b.connectInsecure === "function") {
-      b.connectInsecure(addr, () => resolve(), fail);
-    } else {
-      fail("connectInsecure-n/a");
-    }
-  });
+  void bt.openSettings().catch(() => undefined);
 }
 
 /**
- * اتصال سه‌مرحله‌ای (طبق رفتار اپ‌های استاندارد که روی HC-05 جواب می‌دهند):
- * ۱) بدون جفت و بدون رمزنگاری — اول RFCOMM ناامن، بعد امن، چند دور با فاصله.
- * ۲) اگر read failed ماند: حذف جفت کهنه (unpair) و باز هم بدون جفت.
- * ۳) آخرین راه: جفت‌سازی کامل (پنجره‌ی رمز ۱۲۳۴).
- * خطاها با friendlyBtError فارسی و قابل‌اقدام می‌شوند.
+ * اتصال سه‌مرحله‌ای روی پل نیتیو (هر connect جاوایی خودش SPP + کانال‌ها را امتحان می‌کند):
+ * ۱) چند دور اتصال مستقیم با فاصله — پنجره‌ی ریست ماژول را رد می‌کند
+ * ۲) اگر read failed ماند: حذف جفت کهنه (unpair) و باز هم تلاش
+ * ۳) آخرین راه: جفت‌سازی کامل (پنجره‌ی رمز ۱۲۳۴)
+ * سقف زمانی کل: watchdog — اپ تا ابد «در حال اتصال» نمی‌ماند.
  */
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -232,49 +245,13 @@ function isResetError(e: Error): boolean {
   return /read failed|Connection reset|socket closed|Broken pipe/i.test(e.message);
 }
 
-/** چند دور تلاش امن/ناامن با فاصله‌ی ۲ ثانیه — پنجره‌ی ریست ماژول را رد می‌کند
- *  هر تلاش با زمان سپری‌شده در کنسول ثبت می‌شود تا کاربر بداند کجای کار است */
-async function tryRounds(
-  b: BluetoothSerialBridge,
-  addr: string,
-  rounds: number,
-  start: number,
-  isCancelled: () => boolean
-): Promise<{ ok: boolean; lastErr: Error }> {
-  let lastErr: Error = new Error("connect-failed");
-  const elapsed = (): string => `${Math.round((Date.now() - start) / 1000)}ثانیه`;
-  for (let i = 1; i <= rounds; i++) {
-    if (isCancelled()) return { ok: false, lastErr: new Error("connect-cancelled") };
-    if (i > 1) await sleep(2000);
-    logAppend("sys", `اتصال… دور ${i}/${rounds} — RFCOMM ناامن (${elapsed()})`);
-    try {
-      // اول ناامن — حالت اپ‌های استاندارد (بدون رمزنگاری؛ HC-05 همین را می‌پذیرد)
-      await connectAttempt(b, addr, false);
-      return { ok: true, lastErr };
-    } catch (e) {
-      lastErr = e as Error;
-    }
-    if (isCancelled()) return { ok: false, lastErr: new Error("connect-cancelled") };
-    logAppend("sys", `اتصال… دور ${i}/${rounds} — RFCOMM امن (${elapsed()})`);
-    try {
-      await connectAttempt(b, addr, true);
-      return { ok: true, lastErr };
-    } catch (e) {
-      lastErr = e as Error;
-    }
-    if (!isResetError(lastErr)) {
-      break; // خطای دیگر (مثلاً اشغال بودن) تکرارش بی‌فایده است
-    }
-  }
-  return { ok: false, lastErr };
-}
-
 /** سقف زمانی کل فرایند اتصال — اتصال نیتیو timeout داخلی ندارد و می‌تواند تا ابد بماند */
-const BT_CONNECT_TIMEOUT_MS = 90_000;
+export const BT_CONNECT_TIMEOUT_MS = 90_000;
 
 export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_TIMEOUT_MS): Promise<void> {
-  const b = getBridge();
-  if (!b) throw new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)");
+  if (!btAvailable()) {
+    throw new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)");
+  }
   const addr = address.trim();
   if (addr === "") {
     throw new Error("آدرس دستگاه بلوتوث خالی است — از بخش تنظیمات انتخاب کنید");
@@ -288,28 +265,45 @@ export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_
   const elapsed = (): string => `${Math.round((Date.now() - start) / 1000)}ثانیه`;
   logAppend("sys", `اتصال به ${addr} شروع شد — پیشرفت مرحله‌به‌مرحله در همین کنسول (سقف ${Math.round(timeoutMs / 1000)}ثانیه)`);
 
-  // watchdog: اگر کل نردبان از سقف گذشت، لغو و قطع اجباری تا اپ تا ابد «در حال اتصال» نماند
   const timedOut = { v: false };
   const isCancelled = (): boolean => timedOut.v || Date.now() - start > timeoutMs;
+
+  /** یک تلاش اتصال (خودش SPP + کانال‌ها را در جاوا امتحان می‌کند) */
+  const attempt = async (): Promise<void> => {
+    await bt.connect({ address: addr });
+  };
+
+  /** چند دور تلاش با فاصله‌ی ۲ ثانیه */
+  const tryRounds = async (rounds: number): Promise<{ ok: boolean; lastErr: Error }> => {
+    let lastErr: Error = new Error("connect-failed");
+    for (let i = 1; i <= rounds; i++) {
+      if (isCancelled()) return { ok: false, lastErr: new Error("connect-cancelled") };
+      if (i > 1) await sleep(2000);
+      logAppend("sys", `اتصال… دور ${i}/${rounds} (${elapsed()})`);
+      try {
+        await attempt();
+        return { ok: true, lastErr };
+      } catch (e) {
+        lastErr = e as Error;
+      }
+      if (!isResetError(lastErr)) break; // خطای دیگر (مثلاً اشغال بودن) تکرارش بی‌فایده است
+    }
+    return { ok: false, lastErr };
+  };
 
   const ladder = (async (): Promise<{ ok: boolean; lastErr: Error }> => {
     // نشست اولیه: ماژول بعد از هر تلاش چند ثانیه ریست/پردازش می‌شود (LED خاموش می‌شود) —
     // وصل کردن داخل این پنجره دقیقاً java.io.IOException: read failed می‌دهد
     await sleep(1000);
 
-    // چند دور تلاش با فاصله تا پنجره‌ی خاموشی LED رد شود
-    let res = await tryRounds(b, addr, 3, start, isCancelled);
+    let res = await tryRounds(3);
 
-    // مرحله ۲: کلید احتمالی کهنه را حذف کن و باز هم بدون جفت تلاش کن (حالت اپ استاندارد)
+    // مرحله ۲: کلید احتمالی کهنه را حذف کن و باز هم تلاش کن (حالت اپ استاندارد)
     if (!res.ok && !isCancelled() && isResetError(res.lastErr)) {
       logAppend("sys", `حذف جفت کهنه و تلاش بدون رمزنگاری (حالت اپ‌های استاندارد)… (${elapsed()})`);
-      try {
-        await btUnpair(addr);
-      } catch {
-        /* چیزی برای حذف نبود */
-      }
+      await btUnpair(addr);
       await sleep(2000);
-      res = await tryRounds(b, addr, 2, start, isCancelled);
+      res = await tryRounds(2);
     }
 
     // مرحله ۳ (آخرین راه): جفت‌سازی کامل با پنجره‌ی رمز
@@ -319,7 +313,7 @@ export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_
       try {
         await btPair(addr);
         await sleep(2000);
-        res = await tryRounds(b, addr, 2, start, isCancelled);
+        res = await tryRounds(2);
       } catch (e2) {
         res = { ok: false, lastErr: e2 as Error };
       }
@@ -351,59 +345,19 @@ export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_
   logAppend("sys", `اتصال برقرار شد (${elapsed()})`);
 }
 
-export function btDisconnect(): Promise<void> {
-  const b = getBridge();
-  if (!b) return Promise.resolve();
-  return new Promise((resolve) => {
-    try {
-      b.disconnect(
-        () => resolve(),
-        () => resolve()
-      );
-    } catch {
-      resolve();
-    }
-  });
-}
-
-export function btWrite(data: string): Promise<void> {
-  const b = getBridge();
-  if (!b) return Promise.reject(new Error("پل بلوتوث در دسترس نیست"));
-  return new Promise((resolve, reject) => {
-    b.write(
-      data,
-      () => resolve(),
-      (err) => reject(new Error(friendlyBtError(err, "ارسال به بلوتوث ناموفق بود")))
-    );
-  });
-}
-
-/** پیام‌های رسیده از دستگاه — با جداکننده‌ی \n از پل گرفته می‌شود */
-export function btSubscribe(onData: (text: string) => void): void {
-  const b = getBridge();
-  if (!b) return;
+export async function btDisconnect(): Promise<void> {
   try {
-    b.subscribe(
-      "\n",
-      (data) => {
-        if (typeof data === "string" && data !== "") onData(data);
-      },
-      () => {
-        /* اشتراک قطع شد */
-      }
-    );
+    await bt.disconnect();
   } catch {
-    /* پل آماده نیست */
+    /* قطع باید همیشه ممکن باشد */
   }
 }
 
-export function btUnsubscribe(): void {
-  const b = getBridge();
-  if (!b) return;
+export async function btWrite(data: string): Promise<void> {
   try {
-    b.unsubscribe();
-  } catch {
-    /* ignore */
+    await bt.write({ data });
+  } catch (e) {
+    throw new Error(friendlyBtError(e, "ارسال به بلوتوث ناموفق بود"));
   }
 }
 
@@ -413,6 +367,7 @@ export class BluetoothTransport extends Transport {
   readonly kind = "bluetooth" as const;
   private readonly address: string;
   private offLost: (() => void) | null = null;
+  private dataHandle: PluginListenerHandle | null = null;
 
   constructor(address: string) {
     super();
@@ -437,7 +392,15 @@ export class BluetoothTransport extends Transport {
       this.setStatus("error", e instanceof Error ? e.message : String(e));
       throw e;
     }
-    btSubscribe((text) => this.emit("data", text));
+    // پیام‌های رسیده از دستگاه — رویداد data از ترد خواندن جاوا
+    void bt
+      .addListener("data", (e) => {
+        if (typeof e?.text === "string" && e.text !== "") this.emit("data", e.text);
+      })
+      .then((h) => {
+        this.dataHandle = h;
+      })
+      .catch(() => undefined);
     // قطع‌شدن ناگهانی ماژول (خاموشی/خروج از رنج) → وضعیت اپ هم عوض شود
     this.offLost = btOnConnectionLost((message) => {
       if (this.status !== "connected") return;
@@ -451,7 +414,9 @@ export class BluetoothTransport extends Transport {
   async disconnect(): Promise<void> {
     this.offLost?.();
     this.offLost = null;
-    btUnsubscribe();
+    const h = this.dataHandle;
+    this.dataHandle = null;
+    if (h) void h.remove().catch(() => undefined);
     await btDisconnect();
     this.setStatus("disconnected", "قطع شد");
   }

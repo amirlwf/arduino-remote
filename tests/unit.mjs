@@ -17,7 +17,8 @@ import {
   parseImport,
 } from "../src/lib/storage.ts";
 import { createStore } from "../src/lib/store.ts";
-import { BluetoothTransport, btConnect } from "../src/lib/transports/bluetooth.ts";
+import { BluetoothTransport, btConnect, setBtSerialForTests } from "../src/lib/transports/bluetooth.ts";
+
 import { DemoTransport } from "../src/lib/transports/demo.ts";
 import { WebSocketTransport } from "../src/lib/transports/websocket.ts";
 import { WebSerialTransport } from "../src/lib/transports/webserial.ts";
@@ -286,91 +287,86 @@ eq("log: پاک شد", getLogs().length, 0);
   eq("mgr: قطع", mgr.status, "disconnected");
 }
 
-/* ------------------------------------- bt: پل ساختگی (جفت‌سازی خودکار + fallback ناامن) */
-{
-  const bridge = {
-    list: null, pair: null, connect: null, connectInsecure: null,
-    disconnect: (s) => s && s(), write: (_d, ok) => ok(),
-    subscribe: () => {}, unsubscribe: () => {},
-    isConnected: (_ok, fail) => fail("no"), discoverUnpaired: (ok) => ok([]),
+/* ------------------------------------- bt: پل ساختگی نیتیو */
+function makeBtFake() {
+  const listeners = { data: [], connectionLost: [], deviceFound: [], discoveryFinished: [] };
+  const fake = {
+    calls: [],
+    failWith: null, // پیام خطای connect
+    hang: false, // اتصال هرگز برنگردد
+    paired: false,
+    disconnectCalls: 0,
+    listeners,
+    async list() { return { devices: [] }; },
+    async startDiscovery() {},
+    async stopDiscovery() {},
+    async pair() { fake.calls.push("pair"); fake.paired = true; fake.failWith = null; },
+    async unpair() { fake.calls.push("unpair"); },
+    async connect() {
+      fake.calls.push("connect");
+      if (fake.hang) return new Promise(() => {});
+      if (fake.failWith) throw new Error(fake.failWith);
+    },
+    async write() {},
+    async disconnect() { fake.disconnectCalls++; },
+    async openSettings() {},
+    async addListener(name, cb) {
+      const arr = listeners[name];
+      if (arr) arr.push(cb);
+      return { async remove() { const a = listeners[name]; const i = a ? a.indexOf(cb) : -1; if (i >= 0) a.splice(i, 1); } };
+    },
+    emit(name, ev) { for (const cb of [...listeners[name] ?? []]) cb(ev); },
   };
-  globalThis.bluetoothSerial = bridge;
+  return fake;
+}
+
+const RESET_ERR = "Unable to connect to device — ch3: java.io.IOException: read failed";
+const REFUSED_ERR = "Unable to connect to device — ch3: java.io.IOException: Connection refused";
+
+{
+  const fake = makeBtFake();
+  setBtSerialForTests(fake);
   const run = async () => {
     try { await btConnect("AA:BB:CC:DD:EE:FF"); return null; }
     catch (e) { return e; }
   };
-  let calls = [];
   let err;
 
-  // حالت ۱: بدون جفت — بلافاصله اتصال (بدون پنجره‌ی رمز؛ ناامن اول)
-  bridge.list = (ok) => ok([]);
-  bridge.connect = (_a, ok) => { calls.push("connect"); ok(); };
-  bridge.connectInsecure = (_a, ok) => { calls.push("insecure"); ok(); };
+  // حالت ۱: اتصال مستقیم در دور اول
   err = await run();
-  eq("bt: اتصال مستقیم بدون جفت (ناامن اول)", err ? "THREW:" + err.message : JSON.stringify(calls), '["insecure"]');
+  eq("bt: اتصال مستقیم بدون جفت", err ? "THREW:" + err.message : JSON.stringify(fake.calls), '["connect"]');
 
-  // حالت ۲: ناامن شکست → امن
-  calls = [];
-  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("x"); };
+  // حالت ۲: refused (اشغال) → فقط یک دور، بدون unpair/pair
+  fake.calls = [];
+  fake.failWith = REFUSED_ERR;
   err = await run();
-  eq("bt: fallback به امن", err ? "THREW:" + err.message : JSON.stringify(calls), '["insecure","connect"]');
+  eq("bt: refused فقط یک دور", JSON.stringify(fake.calls), '["connect"]');
+  check("bt: refused پیام فارسی", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
 
-  // حالت ۳: اشغال (refused) → بدون حذف/جفت پرتاب می‌شود
-  calls = [];
-  bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device: Connection refused"); };
-  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: Connection refused"); };
+  // حالت ۳: read failed مداوم → unpair → pair → وصل
+  fake.calls = [];
+  fake.failWith = RESET_ERR;
   err = await run();
-  eq("bt: refused فقط یک دور — بدون unpair/pair", JSON.stringify(calls), '["insecure","connect"]');
-  check("bt: refused پرتاب شد", !!err && err.message.includes("اتصال برقرار نشد"), err ? err.message : "no throw");
+  eq("bt: سه‌مرحله (بدون جفت → unpair → جفت) وصل شد", err ? "THREW:" + err.message : JSON.stringify(fake.calls),
+     '["connect","connect","connect","unpair","connect","connect","pair","connect"]');
 
-  // حالت ۴: read failed مداوم → مرحله ۲ (unpair) → مرحله ۳ (pair) → وصل
-  calls = [];
-  let paired = false;
-  bridge.connect = (_a, ok, fail) => {
-    calls.push("connect");
-    if (paired) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
-  };
-  bridge.connectInsecure = (_a, ok, fail) => {
-    calls.push("insecure");
-    if (paired) ok(); else fail("Unable to connect to device: java.io.IOException: read failed");
-  };
-  bridge.unpair = (_a, ok) => { calls.push("unpair"); ok("unpaired"); };
-  bridge.pair = (_a, ok) => { calls.push("pair"); paired = true; ok("paired"); };
-  err = await run();
-  eq("bt: سه‌مرحله (بدون جفت → unpair → جفت) وصل شد", err ? "THREW:" + err.message : JSON.stringify(calls),
-     '["insecure","connect","insecure","connect","insecure","connect","unpair","insecure","connect","insecure","connect","pair","insecure"]');
-
-  // حالت ۵: لغو جفت در مرحلهٔ آخر → پیام فارسی + ترتیب unpair سپس pair
-  calls = [];
-  paired = false;
-  bridge.connect = (_a, _ok, fail) => { calls.push("connect"); fail("Unable to connect to device: java.io.IOException: read failed"); };
-  bridge.connectInsecure = (_a, _ok, fail) => { calls.push("insecure"); fail("Unable to connect to device: java.io.IOException: read failed"); };
-  bridge.pair = (_a, _ok, fail) => { calls.push("pair"); fail("pairing-cancelled"); };
+  // حالت ۴: لغو جفت در مرحلهٔ آخر → پیام فارسی
+  fake.calls = [];
+  fake.paired = false;
+  fake.failWith = RESET_ERR;
+  fake.pair = async () => { fake.calls.push("pair"); fake.paired = false; throw new Error("pairing-cancelled"); };
   err = await run();
   check("bt: لغو جفت مرحلهٔ آخر → پیام فارسی", !!err && err.message.includes("جفت‌سازی لغو شد"), err ? err.message : "no throw");
-  check("bt: unpair قبل از pair", calls.includes("unpair") && calls.indexOf("unpair") < calls.indexOf("pair"), JSON.stringify(calls));
+  check("bt: unpair قبل از pair", fake.calls.includes("unpair") && fake.calls.indexOf("unpair") < fake.calls.indexOf("pair"), JSON.stringify(fake.calls));
+  fake.pair = async () => { fake.calls.push("pair"); fake.paired = true; fake.failWith = null; };
 
-  delete globalThis.bluetoothSerial;
-}
-
-/* ------------------------------------- bt: رویداد قطع‌شدن اتصال + اعتبارسنجی MAC */
-{
-  const bridge = {
-    connect: null, connectInsecure: null,
-    disconnect: (s) => s && s(), write: (_d, ok) => ok(),
-    subscribe: () => {}, unsubscribe: () => {},
-    isConnected: (_ok, fail) => fail("no"),
-  };
-  let lostCb = null;
-  bridge.setConnectionLostListener = (cb) => { lostCb = cb; };
-  bridge.clearConnectionLostListener = () => { lostCb = null; };
-  bridge.connectInsecure = (_a, ok) => ok();
-  globalThis.bluetoothSerial = bridge;
-
-  // MAC بد — پیش از هر تلاش اتصال و بدون خواب اولیه رد می‌شود
-  let err = null;
+  // MAC بد — پیش از هر تلاش اتصال رد می‌شود
+  fake.calls = [];
+  fake.failWith = null;
+  err = null;
   try { await btConnect("AA:BB"); } catch (e) { err = e.message; }
   check("bt: MAC نامعتبر پیام فارسی دارد", /قالب آدرس MAC/.test(err || ""), err);
+  eq("bt: MAC نامعتبر به پل نمی‌رسد", fake.calls.length, 0);
 
   // قطع‌شدن وسط نشست → وضعیت transport به error می‌رود
   const t = new BluetoothTransport("AA:BB:CC:DD:EE:FF");
@@ -378,46 +374,38 @@ eq("log: پاک شد", getLogs().length, 0);
   eq("bt: ابتدا متصل", t.status, "connected");
   const statuses = [];
   t.on("status", (s) => statuses.push(s));
-  lostCb("Device connection was lost");
+  fake.emit("connectionLost", { message: "Device connection was lost" });
   await sleep(10);
   eq("bt: رویداد قطعی → error", t.status, "error");
   check("bt: رویداد قطعی منتشر شد", statuses.includes("error"), JSON.stringify(statuses));
 
   // رویداد دیرهنگام بعد از قطعِ خودی نادیده گرفته می‌شود (اشتراک پاک شده)
-  const lateLost = lostCb;
   await t.disconnect();
   eq("bt: قطع معمولی → disconnected", t.status, "disconnected");
-  lateLost?.("late");
+  fake.emit("connectionLost", { message: "late" });
   await sleep(10);
   eq("bt: بعد از قطع معمولی event بی‌اثر", t.status, "disconnected");
+  eq("bt: قطع معمولی disconnect پل را صدا زد", fake.disconnectCalls >= 1, true);
 
-  delete globalThis.bluetoothSerial;
+  setBtSerialForTests(null);
 }
 
 /* ------------------------------------- bt: سقف زمانی اتصال (watchdog) */
 {
-  const bridge = {
-    connect: null, connectInsecure: null,
-    disconnect: (s) => { disconnectCalls++; s && s(); },
-    write: (_d, ok) => ok(),
-    subscribe: () => {}, unsubscribe: () => {},
-    isConnected: (_ok, fail) => fail("no"),
-  };
-  let disconnectCalls = 0;
-  // اتصال نیتیو گیر کرده — هرگز برنمی‌گردد
-  bridge.connectInsecure = () => new Promise(() => {});
-  globalThis.bluetoothSerial = bridge;
-
+  const fake = makeBtFake();
+  fake.hang = true;
+  setBtSerialForTests(fake);
   const t0 = Date.now();
   let err = null;
   try { await btConnect("AA:BB:CC:DD:EE:FF", 1500); } catch (e) { err = e.message; }
   const took = Date.now() - t0;
   check("bt: سقف زمانی → پیام اقدام‌پذیر", /بیش از حد طول کشید/.test(err || ""), err);
   check("bt: سقف زمانی درست لغو شد (نه انتظار ۹۰ث)", took < 5000, `${took}ms`);
-  check("bt: قطع اجباری سوکت روی timeout", disconnectCalls >= 1, String(disconnectCalls));
-
-  delete globalThis.bluetoothSerial;
+  check("bt: قطع اجباری سوکت روی timeout", fake.disconnectCalls >= 1, String(fake.disconnectCalls));
+  setBtSerialForTests(null);
 }
+
+/* ============================================================ نتیجه */
 
 const failed = failures.length;
 console.log(`UNIT_SUMMARY pass=${pass} fail=${failed}`);

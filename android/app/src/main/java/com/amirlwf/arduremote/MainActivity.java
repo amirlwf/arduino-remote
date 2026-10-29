@@ -13,6 +13,8 @@ public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
     super.onCreate(savedInstanceState);
+    // پل بلوتوث نیتیو اختصاصی (الگوی SimpleBluetoothTerminal) — جایگزین cordova-plugin
+    registerPlugin(BtSerialPlugin.class);
     if (Build.VERSION.SDK_INT >= 31) {
       requestPermissions(
           new String[] {
