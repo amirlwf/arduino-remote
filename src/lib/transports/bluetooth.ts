@@ -232,18 +232,21 @@ function isResetError(e: Error): boolean {
   return /read failed|Connection reset|socket closed|Broken pipe/i.test(e.message);
 }
 
-/** چند دور تلاش امن/ناامن با فاصله‌ی ۲ ثانیه — پنجره‌ی ریست ماژول را رد می‌کند */
+/** چند دور تلاش امن/ناامن با فاصله‌ی ۲ ثانیه — پنجره‌ی ریست ماژول را رد می‌کند
+ *  هر تلاش با زمان سپری‌شده در کنسول ثبت می‌شود تا کاربر بداند کجای کار است */
 async function tryRounds(
   b: BluetoothSerialBridge,
   addr: string,
-  rounds: number
+  rounds: number,
+  start: number,
+  isCancelled: () => boolean
 ): Promise<{ ok: boolean; lastErr: Error }> {
   let lastErr: Error = new Error("connect-failed");
+  const elapsed = (): string => `${Math.round((Date.now() - start) / 1000)}ثانیه`;
   for (let i = 1; i <= rounds; i++) {
-    if (i > 1) {
-      logAppend("sys", `تلاش اتصال ${i}/${rounds} بعد از ۲ ثانیه…`);
-      await sleep(2000);
-    }
+    if (isCancelled()) return { ok: false, lastErr: new Error("connect-cancelled") };
+    if (i > 1) await sleep(2000);
+    logAppend("sys", `اتصال… دور ${i}/${rounds} — RFCOMM ناامن (${elapsed()})`);
     try {
       // اول ناامن — حالت اپ‌های استاندارد (بدون رمزنگاری؛ HC-05 همین را می‌پذیرد)
       await connectAttempt(b, addr, false);
@@ -251,6 +254,8 @@ async function tryRounds(
     } catch (e) {
       lastErr = e as Error;
     }
+    if (isCancelled()) return { ok: false, lastErr: new Error("connect-cancelled") };
+    logAppend("sys", `اتصال… دور ${i}/${rounds} — RFCOMM امن (${elapsed()})`);
     try {
       await connectAttempt(b, addr, true);
       return { ok: true, lastErr };
@@ -264,7 +269,10 @@ async function tryRounds(
   return { ok: false, lastErr };
 }
 
-export async function btConnect(address: string): Promise<void> {
+/** سقف زمانی کل فرایند اتصال — اتصال نیتیو timeout داخلی ندارد و می‌تواند تا ابد بماند */
+const BT_CONNECT_TIMEOUT_MS = 90_000;
+
+export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_TIMEOUT_MS): Promise<void> {
   const b = getBridge();
   if (!b) throw new Error("پل بلوتوث در دسترس نیست (فقط در APK اندروید)");
   const addr = address.trim();
@@ -276,41 +284,71 @@ export async function btConnect(address: string): Promise<void> {
     throw new Error("قالب آدرس MAC درست نیست — مثال: 98:D3:31:F7:43:6C (از فهرست دستگاه‌ها انتخاب کن)");
   }
 
-  // نشست اولیه: ماژول بعد از هر تلاش چند ثانیه ریست/پردازش می‌شود (LED خاموش می‌شود) —
-  // وصل کردن داخل این پنجره دقیقاً java.io.IOException: read failed می‌دهد
-  await sleep(1000);
+  const start = Date.now();
+  const elapsed = (): string => `${Math.round((Date.now() - start) / 1000)}ثانیه`;
+  logAppend("sys", `اتصال به ${addr} شروع شد — پیشرفت مرحله‌به‌مرحله در همین کنسول (سقف ${Math.round(timeoutMs / 1000)}ثانیه)`);
 
-  // چند دور تلاش با فاصله تا پنجره‌ی خاموشی LED رد شود
-  let res = await tryRounds(b, addr, 3);
+  // watchdog: اگر کل نردبان از سقف گذشت، لغو و قطع اجباری تا اپ تا ابد «در حال اتصال» نماند
+  const timedOut = { v: false };
+  const isCancelled = (): boolean => timedOut.v || Date.now() - start > timeoutMs;
 
-  // مرحله ۲: کلید احتمالی کهنه را حذف کن و باز هم بدون جفت تلاش کن (حالت اپ استاندارد)
-  if (!res.ok && isResetError(res.lastErr)) {
-    logAppend("sys", "حذف جفت کهنه و تلاش بدون رمزنگاری (حالت اپ‌های استاندارد)…");
-    try {
-      await btUnpair(addr);
-    } catch {
-      /* چیزی برای حذف نبود */
-    }
-    await sleep(2000);
-    res = await tryRounds(b, addr, 2);
-  }
+  const ladder = (async (): Promise<{ ok: boolean; lastErr: Error }> => {
+    // نشست اولیه: ماژول بعد از هر تلاش چند ثانیه ریست/پردازش می‌شود (LED خاموش می‌شود) —
+    // وصل کردن داخل این پنجره دقیقاً java.io.IOException: read failed می‌دهد
+    await sleep(1000);
 
-  // مرحله ۳ (آخرین راه): جفت‌سازی کامل با پنجره‌ی رمز
-  if (!res.ok && isResetError(res.lastErr)) {
-    logAppend("sys", "آخرین راه: جفت‌سازی کامل با رمز ۱۲۳۴…");
-    toast("آخرین راه: جفت‌سازی با رمز ۱۲۳۴ — لطفاً تأیید کن", "err");
-    try {
-      await btPair(addr);
+    // چند دور تلاش با فاصله تا پنجره‌ی خاموشی LED رد شود
+    let res = await tryRounds(b, addr, 3, start, isCancelled);
+
+    // مرحله ۲: کلید احتمالی کهنه را حذف کن و باز هم بدون جفت تلاش کن (حالت اپ استاندارد)
+    if (!res.ok && !isCancelled() && isResetError(res.lastErr)) {
+      logAppend("sys", `حذف جفت کهنه و تلاش بدون رمزنگاری (حالت اپ‌های استاندارد)… (${elapsed()})`);
+      try {
+        await btUnpair(addr);
+      } catch {
+        /* چیزی برای حذف نبود */
+      }
       await sleep(2000);
-      res = await tryRounds(b, addr, 2);
-    } catch (e2) {
-      res = { ok: false, lastErr: e2 as Error };
+      res = await tryRounds(b, addr, 2, start, isCancelled);
     }
+
+    // مرحله ۳ (آخرین راه): جفت‌سازی کامل با پنجره‌ی رمز
+    if (!res.ok && !isCancelled() && isResetError(res.lastErr)) {
+      logAppend("sys", `آخرین راه: جفت‌سازی کامل با رمز ۱۲۳۴… (${elapsed()})`);
+      toast("آخرین راه: جفت‌سازی با رمز ۱۲۳۴ — لطفاً تأیید کن", "err");
+      try {
+        await btPair(addr);
+        await sleep(2000);
+        res = await tryRounds(b, addr, 2, start, isCancelled);
+      } catch (e2) {
+        res = { ok: false, lastErr: e2 as Error };
+      }
+    }
+    return res;
+  })();
+
+  const winner = await Promise.race([
+    ladder.then((res) => ({ done: true as const, res })),
+    sleep(timeoutMs).then(() => ({ done: false as const })),
+  ]);
+
+  if (!winner.done) {
+    timedOut.v = true;
+    logAppend("err", `اتصال از سقف ${Math.round(timeoutMs / 1000)}ثانیه گذشت — قطع اجباری و لغو (${elapsed()})`);
+    // سوکت نیتیو را ببند تا ترد connectِ گیرکرده آزاد شود
+    await btDisconnect();
+    throw new Error(
+      "اتصال برقرار نشد (بیش از حد طول کشید) — چک کن: ۱) ماژول روشن و LED چشمک‌تند باشد " +
+        "۲) اپ یا Serial Monitor دیگری اشغالش نکرده باشد (LED ثابت = اشغال) ۳) بلوتوث گوشی روشن باشد — بعد دوباره بزن"
+    );
   }
 
+  const res = winner.res;
   if (!res.ok) {
+    if (res.lastErr.message === "connect-cancelled") return; // watchdog پیام خودش را داده
     throw new Error(friendlyBtError(res.lastErr, "اتصال بلوتوث ناموفق بود"));
   }
+  logAppend("sys", `اتصال برقرار شد (${elapsed()})`);
 }
 
 export function btDisconnect(): Promise<void> {

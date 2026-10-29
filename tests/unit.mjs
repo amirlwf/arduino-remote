@@ -394,6 +394,31 @@ eq("log: پاک شد", getLogs().length, 0);
   delete globalThis.bluetoothSerial;
 }
 
+/* ------------------------------------- bt: سقف زمانی اتصال (watchdog) */
+{
+  const bridge = {
+    connect: null, connectInsecure: null,
+    disconnect: (s) => { disconnectCalls++; s && s(); },
+    write: (_d, ok) => ok(),
+    subscribe: () => {}, unsubscribe: () => {},
+    isConnected: (_ok, fail) => fail("no"),
+  };
+  let disconnectCalls = 0;
+  // اتصال نیتیو گیر کرده — هرگز برنمی‌گردد
+  bridge.connectInsecure = () => new Promise(() => {});
+  globalThis.bluetoothSerial = bridge;
+
+  const t0 = Date.now();
+  let err = null;
+  try { await btConnect("AA:BB:CC:DD:EE:FF", 1500); } catch (e) { err = e.message; }
+  const took = Date.now() - t0;
+  check("bt: سقف زمانی → پیام اقدام‌پذیر", /بیش از حد طول کشید/.test(err || ""), err);
+  check("bt: سقف زمانی درست لغو شد (نه انتظار ۹۰ث)", took < 5000, `${took}ms`);
+  check("bt: قطع اجباری سوکت روی timeout", disconnectCalls >= 1, String(disconnectCalls));
+
+  delete globalThis.bluetoothSerial;
+}
+
 const failed = failures.length;
 console.log(`UNIT_SUMMARY pass=${pass} fail=${failed}`);
 if (failed > 0) {
