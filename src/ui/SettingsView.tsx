@@ -376,7 +376,7 @@ export function SettingsView() {
           شبیه‌ساز برای یادگیری، وب‌سوکت برای پل‌های سفارشی، سریال USB برای تست با کابل.
         </div>
         <div className="hint" style={{ marginTop: 8 }} data-testid="creator">
-          نسخه ۱.۰.۹ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
+          نسخه ۱.۰.۱۰ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
           <br />
           سازنده:{" "}
           <a href="https://amirlwf.ir" target="_blank" rel="noreferrer">
@@ -404,19 +404,23 @@ function ProfileModal({ state, onClose }: { state: ProfState; onClose: () => voi
   const editing = state?.mode === "edit";
 
   // هر بار که باز می‌شود مقادیر را تازه کن
-  const lastKey = editing ? state.p.id : "add";
+  const lastKey = open ? (editing ? state.p.id : "add") : null;
   const [lastApplied, setLastApplied] = useState<string | null>(null);
-  if (open && lastApplied !== lastKey) {
+  if (lastApplied !== lastKey) {
     setLastApplied(lastKey);
-    setName(editing ? state.p.name : "");
-    setIcon(editing ? state.p.icon : "🔧");
-    setErr("");
+    if (open) {
+      setName(editing ? state.p.name : "");
+      setIcon(editing ? state.p.icon : "🔧");
+      setErr("");
+    }
   }
 
-  if (ref.current) {
-    if (open && !ref.current.open) ref.current.showModal();
-    else if (!open && ref.current.open) ref.current.close();
-  }
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open && !d.open) d.showModal();
+    else if (!open && d.open) d.close();
+  }, [open]);
 
   const save = () => {
     if (name.trim() === "") {

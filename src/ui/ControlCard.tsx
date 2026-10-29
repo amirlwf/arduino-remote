@@ -163,6 +163,7 @@ function sliderStep(ctrl: SliderControl): number {
 
 function SliderW({ ctrl }: { ctrl: SliderControl }) {
   const [local, setLocal] = useState(ctrl.value);
+  const latest = useRef(ctrl.value);
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
@@ -174,17 +175,19 @@ function SliderW({ ctrl }: { ctrl: SliderControl }) {
 
   const onInput = (e: React.ChangeEvent<HTMLInputElement>) => {
     const v = Number(e.currentTarget.value);
+    latest.current = v;
     setLocal(v);
+    store.replaceControl(ctrl.id, { ...ctrl, value: v });
     if (ctrl.sendOnRelease) return;
     if (timer.current) clearTimeout(timer.current);
     timer.current = setTimeout(() => void fire(ctrl, { kind: "slider", value: v }), 80);
   };
 
-  const onChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const v = Number(e.currentTarget.value);
-    setLocal(v);
-    store.replaceControl(ctrl.id, { ...ctrl, value: v });
-    if (ctrl.sendOnRelease) void fire(ctrl, { kind: "slider", value: v });
+  // در React رویداد change برای input از نوع range با هر حرکت صدا زده می‌شود نه فقط
+  // هنگام رها کردن — ارسال «هنگام رها کردن» باید روی pointerup/keyup/blur باشد
+  const onRelease = () => {
+    if (!ctrl.sendOnRelease) return;
+    void fire(ctrl, { kind: "slider", value: latest.current });
   };
 
   return (
@@ -199,8 +202,10 @@ function SliderW({ ctrl }: { ctrl: SliderControl }) {
         step={sliderStep(ctrl)}
         value={local}
         aria-label={ctrl.name}
-        onInput={onInput}
-        onChange={onChange}
+        onChange={onInput}
+        onPointerUp={onRelease}
+        onKeyUp={onRelease}
+        onBlur={onRelease}
       />
     </div>
   );

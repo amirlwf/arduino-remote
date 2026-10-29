@@ -41,8 +41,19 @@ export class WebSerialTransport extends Transport {
     }
     this.setStatus("connecting");
     // requestPort نیازمند کلیک کاربر است — connect همیشه از دکمه صدا زده می‌شود
-    const port = await serial.requestPort();
-    await port.open({ baudRate: this.baudRate });
+    let port: SerialPortLike;
+    try {
+      port = await serial.requestPort();
+    } catch {
+      throw new Error("پورتی انتخاب نشد — پنجره‌ی انتخاب پورت بسته یا لغو شد");
+    }
+    try {
+      await port.open({ baudRate: this.baudRate });
+    } catch {
+      throw new Error(
+        `باز کردن پورت سریال ناموفق بود — شاید برنامه‌ی دیگری (مثل Arduino IDE) پورت را اشغال کرده باشد`
+      );
+    }
     this.port = port;
     this.setStatus("connected", `پورت باز شد (${this.baudRate} baud)`);
     void this.readLoop(port);
