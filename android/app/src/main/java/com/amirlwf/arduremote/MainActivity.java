@@ -12,9 +12,10 @@ import com.getcapacitor.BridgeActivity;
 public class MainActivity extends BridgeActivity {
   @Override
   public void onCreate(Bundle savedInstanceState) {
-    super.onCreate(savedInstanceState);
-    // پل بلوتوث نیتیو اختصاصی (الگوی SimpleBluetoothTerminal) — جایگزین cordova-plugin
+    // پلاگین باید قبل از super.onCreate ثبت شود — بریج حین super ساخته می‌شود و
+    // ثبتِ بعد از آن نادیده گرفته می‌شود (ارور «plugin is not implemented»)
     registerPlugin(BtSerialPlugin.class);
+    super.onCreate(savedInstanceState);
     if (Build.VERSION.SDK_INT >= 31) {
       requestPermissions(
           new String[] {
