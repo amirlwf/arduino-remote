@@ -3,6 +3,12 @@ package com.amirlwf.arduremote;
 import android.annotation.SuppressLint;
 import android.bluetooth.BluetoothAdapter;
 import android.bluetooth.BluetoothDevice;
+import android.bluetooth.BluetoothGatt;
+import android.bluetooth.BluetoothGattCallback;
+import android.bluetooth.BluetoothGattCharacteristic;
+import android.bluetooth.BluetoothGattDescriptor;
+import android.bluetooth.BluetoothGattService;
+import android.bluetooth.BluetoothProfile;
 import android.bluetooth.BluetoothSocket;
 import android.content.BroadcastReceiver;
 import android.content.Context;
@@ -24,13 +30,13 @@ import java.util.Set;
 import java.util.UUID;
 
 /**
- * پل بلوتوث کلاسیک (SPP) اختصاصی Arduino Remote — نوشته‌شده در جاوای نیتیو.
+ * پل بلوتوث اختصاصی Arduino Remote — نوشته‌شده در جاوای نیتیو.
  *
- * الگوی اتصال از kai-morich/SimpleBluetoothTerminal (اپی که روی HC-05 واقعاً جواب می‌دهد):
- *   ۱) cancelDiscovery قبل از هر connect — discovery دشمن RFCOMM است
- *   ۲) اول createRfcommSocketToServiceRecord با SPP UUID (اتصال «امن» که روی HC-05 جفت‌نشده هم جواب می‌دهد)
- *   ۳) در خطا: fallback به createRfcommSocket کانال ۱..۳ (پاسخ رفلکس دستگاه‌های قدیمی)
- *   ۴) ترد خواندن اختصاصی؛ قطع‌شدن ناگهانی با رویداد connectionLost به اپ می‌رسد
+ * دو مسیر اتصال (بر اساس نوع دستگاه — تشخیص خودکار):
+ *   • کلاسیک (SPP): الگوی SimpleBluetoothTerminal — SPP UUID سپس fallback کانال ۱..۳
+ *   • BLE (GATT): برای ماژول‌هایی که به‌اشتباه «HC-05» نام دارند ولی LE هستند
+ *     (AT-09 / MLT-BT05 / JDY-08 و…) — پروفایل‌های Nordic UART، HM-10 (FFE1)
+ *     و تشخیص عمومی هر characteristic سریالی؛ retry برای خطای معروف 133
  *
  * رویدادها: data (text) · connectionLost (message) · deviceFound · discoveryFinished
  */
@@ -38,6 +44,11 @@ import java.util.UUID;
 public class BtSerialPlugin extends Plugin {
 
     private static final UUID SPP_UUID = UUID.fromString("00001101-0000-1000-8000-00805F9B34FB");
+    // پروفایل‌های سریال BLE به ترتیب اولویت
+    private static final UUID NORDIC_UART = UUID.fromString("6e400001-b5a3-f393-e0a9-e50e24dcca9e");
+    private static final UUID HM10_SERVICE = UUID.fromString("0000ffe0-0000-1000-8000-00805f9b34fb");
+    private static final UUID FFF0_SERVICE = UUID.fromString("0000fff0-0000-1000-8000-00805f9b34fb");
+    private static final UUID CLIENT_CONFIG = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb");
 
     private BluetoothAdapter adapter;
     private volatile BluetoothSocket socket;
@@ -47,6 +58,13 @@ public class BtSerialPlugin extends Plugin {
     private volatile boolean userDisconnected = false;
     private final Object writeLock = new Object();
     private BroadcastReceiver discoveryReceiver;
+
+    // مسیر BLE
+    private volatile BluetoothGatt gatt;
+    private volatile BluetoothGattCharacteristic writeChar;
+    private volatile BluetoothGattCharacteristic notifyChar;
+    private volatile PluginCall pendingGattCall;
+    private int gattRetries = 0;
 
     private synchronized BluetoothAdapter adapter() {
         if (adapter == null) adapter = BluetoothAdapter.getDefaultAdapter();
@@ -191,7 +209,7 @@ public class BtSerialPlugin extends Plugin {
         }
     }
 
-    /* ------------------------------------------------------------ اتصال (الگوی SimpleBluetoothTerminal) */
+    /* ------------------------------------------------------------ اتصال */
 
     @SuppressLint("MissingPermission")
     @PluginMethod
@@ -205,7 +223,6 @@ public class BtSerialPlugin extends Plugin {
         final BluetoothAdapter a = adapter();
         // disconnect باید حتی وسط connect در دسترس باشد → connect در ترد خودش
         Thread t = new Thread(() -> {
-            // همه‌ی خطاها جمع می‌شوند تا لاگ نشان دهد کدام نوع سوکت چه خطایی داد
             final StringBuilder errs = new StringBuilder();
             try {
                 a.cancelDiscovery();
@@ -214,8 +231,30 @@ public class BtSerialPlugin extends Plugin {
                     try { Thread.sleep(100); } catch (InterruptedException ignored) { }
                 }
                 Thread.sleep(300);
+            } catch (InterruptedException ignored) {
+            }
 
-                BluetoothDevice device = a.getRemoteDevice(address);
+            final BluetoothDevice device;
+            try {
+                device = a.getRemoteDevice(address);
+            } catch (IllegalArgumentException e) {
+                call.reject("Invalid Bluetooth MAC address: " + address);
+                return;
+            }
+
+            // نوع دستگاه: ۱=کلاسیک، ۲=فقط BLE، ۳=دو حالته (کامل) — ماژول‌های «HC-05»‌نامِ
+            // بازار معمولاً نوع ۲ هستند و اصلاً سرویس SPP ندارند → مستقیم مسیر GATT
+            int type;
+            try {
+                type = device.getType();
+            } catch (SecurityException e) {
+                call.reject("Bluetooth permission required to connect");
+                return;
+            }
+            final boolean classicAllowed = (type != BluetoothDevice.DEVICE_TYPE_LE);
+            final boolean gattAllowed = (type != BluetoothDevice.DEVICE_TYPE_CLASSIC);
+
+            if (classicAllowed) {
                 BluetoothSocket s;
                 // ۱) SPP UUID (امن — روی HC-05 جفت‌نشده هم جواب می‌دهد)
                 try {
@@ -232,7 +271,8 @@ public class BtSerialPlugin extends Plugin {
                     return;
                 }
                 // ۲) fallback رفلکس — کانال‌های ۱ تا ۳ (اتصال بدون رمزنگاری، حالت اپ‌های استاندارد)
-                for (int ch = 1; ch <= 3; ch++) {
+                boolean connected = false;
+                for (int ch = 1; ch <= 3 && !connected; ch++) {
                     if (userDisconnected) {
                         call.reject("connect-cancelled");
                         return;
@@ -249,18 +289,161 @@ public class BtSerialPlugin extends Plugin {
                         if (errs.length() > 0) errs.append(" | ");
                         errs.append("ch").append(ch).append(": ").append(e.getMessage());
                         closeQuietly();
+                    } catch (Exception e) {
+                        call.reject("Unable to connect to device — " + e);
+                        return;
                     }
                 }
-                call.reject("Unable to connect to device — " + errs);
-            } catch (IllegalArgumentException e) {
-                call.reject("Invalid Bluetooth MAC address: " + address);
-            } catch (Exception e) {
-                if (userDisconnected) call.reject("connect-cancelled");
-                else call.reject("Unable to connect to device — " + e);
+                if (!gattAllowed) {
+                    call.reject("Unable to connect to device — " + errs);
+                    return;
+                }
+                // دو حالته: کلاسیک نشد → GATT
+            }
+
+            if (gattAllowed) {
+                gattRetries = 0;
+                startGattConnect(device, call);
             }
         }, "bt-connect");
         connectThread = t;
         t.start();
+    }
+
+    /* ------------------------------------------------------------ مسیر BLE (GATT) */
+
+    @SuppressLint("MissingPermission")
+    private void startGattConnect(BluetoothDevice device, PluginCall call) {
+        pendingGattCall = call;
+        BluetoothGattCallback cb = new BluetoothGattCallback() {
+            @Override
+            public void onConnectionStateChange(BluetoothGatt g, int status, int newState) {
+                if (newState == BluetoothProfile.STATE_CONNECTED) {
+                    if (userDisconnected) { g.disconnect(); return; }
+                    g.discoverServices();
+                } else if (newState == BluetoothProfile.STATE_DISCONNECTED) {
+                    if (userDisconnected) { g.close(); return; }
+                    if (pendingGattCall != null) {
+                        // هنوز در حال اتصال — خطای معروف 133/257 → retry
+                        if ((status == 133 || status == 257) && gattRetries < 2) {
+                            gattRetries++;
+                            g.close();
+                            new android.os.Handler(android.os.Looper.getMainLooper()).postDelayed(
+                                () -> startGattConnect(device, pendingGattCall), 400);
+                            return;
+                        }
+                        PluginCall c = pendingGattCall;
+                        pendingGattCall = null;
+                        g.close();
+                        c.reject("Unable to connect to device — ble: status " + status);
+                    } else {
+                        // قطع وسط نشست — مثل مسیر کلاسیک به اپ خبر بده
+                        g.close();
+                        gatt = null; writeChar = null; notifyChar = null;
+                        JSObject ev = new JSObject();
+                        ev.put("message", "Device connection was lost (BLE)");
+                        notifyListeners("connectionLost", ev);
+                    }
+                }
+            }
+
+            @Override
+            public void onServicesDiscovered(BluetoothGatt g, int status) {
+                if (userDisconnected || pendingGattCall == null) return;
+                if (status != BluetoothGatt.GATT_SUCCESS || !pickSerialChars(g)) {
+                    PluginCall c = pendingGattCall;
+                    pendingGattCall = null;
+                    g.disconnect();
+                    g.close();
+                    c.reject("Unable to connect to device — ble: serial characteristic not found");
+                    return;
+                }
+                g.setCharacteristicNotification(notifyChar, true);
+                BluetoothGattDescriptor d = notifyChar.getDescriptor(CLIENT_CONFIG);
+                if (d == null) {
+                    PluginCall c = pendingGattCall;
+                    pendingGattCall = null;
+                    g.disconnect();
+                    g.close();
+                    c.reject("Unable to connect to device — ble: CCCD descriptor missing");
+                    return;
+                }
+                d.setValue(BluetoothGattDescriptor.ENABLE_NOTIFICATION_VALUE);
+                if (!g.writeDescriptor(d)) {
+                    PluginCall c = pendingGattCall;
+                    pendingGattCall = null;
+                    g.disconnect();
+                    g.close();
+                    c.reject("Unable to connect to device — ble: subscribe failed");
+                }
+                // موفقیت ادامه دارد در onDescriptorWrite
+            }
+
+            @Override
+            public void onDescriptorWrite(BluetoothGatt g, BluetoothGattDescriptor d, int status) {
+                if (userDisconnected || pendingGattCall == null) return;
+                PluginCall c = pendingGattCall;
+                pendingGattCall = null;
+                if (status == BluetoothGatt.GATT_SUCCESS) {
+                    c.resolve();
+                } else {
+                    g.disconnect();
+                    g.close();
+                    c.reject("Unable to connect to device — ble: subscribe status " + status);
+                }
+            }
+
+            @Override
+            @SuppressWarnings("deprecation")
+            public void onCharacteristicChanged(BluetoothGatt g, BluetoothGattCharacteristic c) {
+                byte[] v = c.getValue();
+                if (v != null && v.length > 0) {
+                    JSObject ev = new JSObject();
+                    ev.put("text", new String(v, StandardCharsets.UTF_8));
+                    notifyListeners("data", ev);
+                }
+            }
+        };
+        gatt = device.connectGatt(getContext(), false, cb, BluetoothDevice.TRANSPORT_LE);
+    }
+
+    /** پیدا کردن جفت characteristic سریال (notify + write) در سرویس‌های شناخته‌شده و بعد عمومی */
+    private boolean pickSerialChars(BluetoothGatt g) {
+        BluetoothGattService svc = g.getService(NORDIC_UART);
+        if (svc == null) svc = g.getService(HM10_SERVICE);
+        if (svc == null) svc = g.getService(FFF0_SERVICE);
+        if (svc == null) {
+            // عمومی: هر سرویسی که هم notify و هم write دارد
+            for (BluetoothGattService s : g.getServices()) {
+                if (firstCharWith(s, BluetoothGattCharacteristic.PROPERTY_NOTIFY) != null
+                        && firstWritableChar(s) != null) {
+                    svc = s;
+                    break;
+                }
+            }
+        }
+        if (svc == null) return false;
+        notifyChar = firstCharWith(svc, BluetoothGattCharacteristic.PROPERTY_NOTIFY);
+        writeChar = firstWritableChar(svc);
+        return notifyChar != null && writeChar != null;
+    }
+
+    private BluetoothGattCharacteristic firstCharWith(BluetoothGattService svc, int property) {
+        for (BluetoothGattCharacteristic c : svc.getCharacteristics()) {
+            if ((c.getProperties() & property) != 0) return c;
+        }
+        return null;
+    }
+
+    private BluetoothGattCharacteristic firstWritableChar(BluetoothGattService svc) {
+        for (BluetoothGattCharacteristic c : svc.getCharacteristics()) {
+            int p = c.getProperties();
+            if ((p & BluetoothGattCharacteristic.PROPERTY_WRITE) != 0
+                    || (p & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0) {
+                return c;
+            }
+        }
+        return null;
     }
 
     @SuppressLint("MissingPermission")
@@ -318,6 +501,24 @@ public class BtSerialPlugin extends Plugin {
     @PluginMethod
     public void write(PluginCall call) {
         String data = call.getString("data", "");
+        // مسیر BLE
+        BluetoothGattCharacteristic c = writeChar;
+        BluetoothGatt g = gatt;
+        if (c != null && g != null) {
+            int p = c.getProperties();
+            c.setWriteType(
+                (p & BluetoothGattCharacteristic.PROPERTY_WRITE_NO_RESPONSE) != 0
+                    ? BluetoothGattCharacteristic.WRITE_TYPE_NO_RESPONSE
+                    : BluetoothGattCharacteristic.WRITE_TYPE_DEFAULT);
+            c.setValue(data.getBytes(StandardCharsets.UTF_8));
+            if (!g.writeCharacteristic(c)) {
+                call.reject("write failed — ble");
+            } else {
+                call.resolve();
+            }
+            return;
+        }
+        // مسیر کلاسیک
         OutputStream o = out;
         BluetoothSocket s = socket;
         if (o == null || s == null) {
@@ -338,6 +539,17 @@ public class BtSerialPlugin extends Plugin {
     @PluginMethod
     public void disconnect(PluginCall call) {
         userDisconnected = true;
+        // مسیر BLE
+        BluetoothGatt g = gatt;
+        gatt = null;
+        writeChar = null;
+        notifyChar = null;
+        pendingGattCall = null;
+        if (g != null) {
+            try { g.disconnect(); } catch (Exception ignored) { }
+            try { g.close(); } catch (Exception ignored) { }
+        }
+        // مسیر کلاسیک
         closeQuietly();
         call.resolve();
     }
@@ -381,6 +593,17 @@ public class BtSerialPlugin extends Plugin {
     @Override
     protected void handleOnDestroy() {
         userDisconnected = true;
+        // مسیر BLE
+        BluetoothGatt g = gatt;
+        gatt = null;
+        writeChar = null;
+        notifyChar = null;
+        pendingGattCall = null;
+        if (g != null) {
+            try { g.disconnect(); } catch (Exception ignored) { }
+            try { g.close(); } catch (Exception ignored) { }
+        }
+        // مسیر کلاسیک
         closeQuietly();
         Thread ct = connectThread;
         if (ct != null) ct.interrupt();
