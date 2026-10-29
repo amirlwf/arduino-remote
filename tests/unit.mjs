@@ -353,7 +353,46 @@ eq("log: پاک شد", getLogs().length, 0);
   delete globalThis.bluetoothSerial;
 }
 
-/* ============================================================ نتیجه */
+/* ------------------------------------- bt: رویداد قطع‌شدن اتصال + اعتبارسنجی MAC */
+{
+  const bridge = {
+    connect: null, connectInsecure: null,
+    disconnect: (s) => s && s(), write: (_d, ok) => ok(),
+    subscribe: () => {}, unsubscribe: () => {},
+    isConnected: (_ok, fail) => fail("no"),
+  };
+  let lostCb = null;
+  bridge.setConnectionLostListener = (cb) => { lostCb = cb; };
+  bridge.clearConnectionLostListener = () => { lostCb = null; };
+  bridge.connectInsecure = (_a, ok) => ok();
+  globalThis.bluetoothSerial = bridge;
+
+  // MAC بد — پیش از هر تلاش اتصال و بدون خواب اولیه رد می‌شود
+  let err = null;
+  try { await btConnect("AA:BB"); } catch (e) { err = e.message; }
+  check("bt: MAC نامعتبر پیام فارسی دارد", /قالب آدرس MAC/.test(err || ""), err);
+
+  // قطع‌شدن وسط نشست → وضعیت transport به error می‌رود
+  const t = new BluetoothTransport("AA:BB:CC:DD:EE:FF");
+  await t.connect();
+  eq("bt: ابتدا متصل", t.status, "connected");
+  const statuses = [];
+  t.on("status", (s) => statuses.push(s));
+  lostCb("Device connection was lost");
+  await sleep(10);
+  eq("bt: رویداد قطعی → error", t.status, "error");
+  check("bt: رویداد قطعی منتشر شد", statuses.includes("error"), JSON.stringify(statuses));
+
+  // رویداد دیرهنگام بعد از قطعِ خودی نادیده گرفته می‌شود (اشتراک پاک شده)
+  const lateLost = lostCb;
+  await t.disconnect();
+  eq("bt: قطع معمولی → disconnected", t.status, "disconnected");
+  lateLost?.("late");
+  await sleep(10);
+  eq("bt: بعد از قطع معمولی event بی‌اثر", t.status, "disconnected");
+
+  delete globalThis.bluetoothSerial;
+}
 
 const failed = failures.length;
 console.log(`UNIT_SUMMARY pass=${pass} fail=${failed}`);

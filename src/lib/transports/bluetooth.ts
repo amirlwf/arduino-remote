@@ -33,6 +33,9 @@ interface BluetoothSerialBridge {
   /** اتصال RFCOMM ناامن — پشتیبان برای دستگاه‌های جفت‌نشده مثل HC-05 */
   connectInsecure?(device: string, success: () => void, failure: (err: unknown) => void): void;
   showBluetoothSettings?(success: () => void, failure: (err: unknown) => void): void;
+  /** افزوده‌ی پچ این پروژه: رویداد دائمی قطع‌شدن اتصال وسط نشست (خاموشی ماژول، خروج از رنج) */
+  setConnectionLostListener?(notify: (message: string) => void): void;
+  clearConnectionLostListener?(): void;
 }
 
 export function getBridge(): BluetoothSerialBridge | undefined {
@@ -67,6 +70,9 @@ function friendlyBtError(err: unknown, fallback: string): string {
     );
   }
   if (/pairing-cancelled/i.test(raw)) return "جفت‌سازی لغو شد — رمز پیش‌فرض معمول HC-05 عدد 1234 است";
+  if (/not connected/i.test(raw)) {
+    return "اتصال برقرار نیست — ماژول خاموش شده یا از رنج خارج شده؛ دوباره وصل شو (جزئیات در تب کنسول)";
+  }
   if (/pair-timeout/i.test(raw)) return "جفت‌سازی بیش از حد طول کشید — ماژول را روشن و نزدیک گوشی نگه دارید و دوباره تلاش کنید";
   if (/createBond-rejected|pair-error/i.test(raw)) {
     console.warn("[bt] pair error:", raw);
@@ -168,6 +174,26 @@ export function btOnFound(onDevice: (d: BtDevice) => void): () => void {
   };
 }
 
+/** رویداد دائمی «اتصال قطع شد» از سمت ماژول — خروجی: تابع لغو اشتراک */
+export function btOnConnectionLost(onLost: (message: string) => void): () => void {
+  const b = getBridge();
+  if (!b || typeof b.setConnectionLostListener !== "function") return () => undefined;
+  try {
+    b.setConnectionLostListener!((message) => {
+      if (typeof message === "string" && message !== "") onLost(message);
+    });
+  } catch {
+    return () => undefined;
+  }
+  return () => {
+    try {
+      getBridge()?.clearConnectionLostListener?.();
+    } catch {
+      /* بی‌خیال */
+    }
+  };
+}
+
 /** باز کردن صفحه‌ی تنظیمات بلوتوث سیستم (برای جفت‌سازی دستی) */
 export function openBtSettings(): void {
   const b = getBridge();
@@ -244,6 +270,10 @@ export async function btConnect(address: string): Promise<void> {
   const addr = address.trim();
   if (addr === "") {
     throw new Error("آدرس دستگاه بلوتوث خالی است — از بخش تنظیمات انتخاب کنید");
+  }
+  // MAC نامعتبر در سمت جاوا IllegalArgumentException می‌دهد — اینجا زودتر با پیام درست می‌گیریم
+  if (!/^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$/.test(addr)) {
+    throw new Error("قالب آدرس MAC درست نیست — مثال: 98:D3:31:F7:43:6C (از فهرست دستگاه‌ها انتخاب کن)");
   }
 
   // نشست اولیه: ماژول بعد از هر تلاش چند ثانیه ریست/پردازش می‌شود (LED خاموش می‌شود) —
@@ -344,6 +374,7 @@ export function btUnsubscribe(): void {
 export class BluetoothTransport extends Transport {
   readonly kind = "bluetooth" as const;
   private readonly address: string;
+  private offLost: (() => void) | null = null;
 
   constructor(address: string) {
     super();
@@ -369,10 +400,19 @@ export class BluetoothTransport extends Transport {
       throw e;
     }
     btSubscribe((text) => this.emit("data", text));
+    // قطع‌شدن ناگهانی ماژول (خاموشی/خروج از رنج) → وضعیت اپ هم عوض شود
+    this.offLost = btOnConnectionLost((message) => {
+      if (this.status !== "connected") return;
+      logAppend("err", "اتصال بلوتوث قطع شد: " + message);
+      toast("اتصال دستگاه قطع شد — ماژول خاموش یا خارج از رنج است", "err");
+      this.setStatus("error", "اتصال دستگاه قطع شد — دوباره وصل شو");
+    });
     this.setStatus("connected", this.label);
   }
 
   async disconnect(): Promise<void> {
+    this.offLost?.();
+    this.offLost = null;
     btUnsubscribe();
     await btDisconnect();
     this.setStatus("disconnected", "قطع شد");

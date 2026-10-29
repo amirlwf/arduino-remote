@@ -512,6 +512,116 @@ const PATCHES = [
             // Make a connection to the BluetoothSocket`,
     targets: SERVICE_TARGETS,
   },
+
+  /* پچ ۱۲ — lost-event: قطع‌شدن ناگهانی ماژول (خاموشی/خروج از رنج) باید به اپ برسد.
+     قبلاً خطا فقط به callback اتصال اولیه می‌رفت که Promise آن مدت‌ها قبل resolve شده
+     بود → توپ اپ «متصل» می‌ماند و کاربر فقط با نبود پاسخ می‌فهمید. */
+  {
+    id: "lost-field",
+    marker: "PATCH(arduino-remote-lost-field)",
+    old: `    private CallbackContext deviceDiscoveredCallback;`,
+    new: `    private CallbackContext deviceDiscoveredCallback;
+    // PATCH(arduino-remote-lost-field): شنونده‌ی دائمی قطع‌شدن اتصال
+    private CallbackContext connectionLostCallback;`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "lost-const",
+    marker: "PATCH(arduino-remote-lost-const)",
+    old: `    private static final String DISCOVER_UNPAIRED = "discoverUnpaired";`,
+    new: `    private static final String DISCOVER_UNPAIRED = "discoverUnpaired";
+    // PATCH(arduino-remote-lost-const)
+    private static final String SET_CONNECTION_LOST_LISTENER = "setConnectionLostListener";
+    private static final String CLEAR_CONNECTION_LOST_LISTENER = "clearConnectionLostListener";`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "lost-action",
+    marker: "PATCH(arduino-remote-lost-action)",
+    old: `        } else if (action.equals(SET_DEVICE_DISCOVERED_LISTENER)) {
+
+            this.deviceDiscoveredCallback = callbackContext;`,
+    new: `        } else if (action.equals(SET_CONNECTION_LOST_LISTENER)) {
+            // PATCH(arduino-remote-lost-action): رویداد دائمی «اتصال قطع شد»
+            this.connectionLostCallback = callbackContext;
+            PluginResult res = new PluginResult(PluginResult.Status.NO_RESULT);
+            res.setKeepCallback(true);
+            callbackContext.sendPluginResult(res);
+        } else if (action.equals(CLEAR_CONNECTION_LOST_LISTENER)) {
+            this.connectionLostCallback = null;
+            callbackContext.success();
+        } else if (action.equals(SET_DEVICE_DISCOVERED_LISTENER)) {
+
+            this.deviceDiscoveredCallback = callbackContext;`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "lost-notify",
+    marker: "PATCH(arduino-remote-lost-notify)",
+    old: `    private void notifyConnectionLost(String error) {
+        if (connectCallback != null) {
+            connectCallback.error(error);
+            connectCallback = null;
+        }
+    }`,
+    new: `    private void notifyConnectionLost(String error) {
+        if (connectCallback != null) {
+            connectCallback.error(error);
+            connectCallback = null;
+        }
+        // PATCH(arduino-remote-lost-notify): اپ باید از قطع‌شدن وسط نشست باخبر شود
+        if (connectionLostCallback != null) {
+            PluginResult res = new PluginResult(PluginResult.Status.ERROR, error);
+            res.setKeepCallback(true);
+            connectionLostCallback.sendPluginResult(res);
+        }
+    }`,
+    targets: JAVA_TARGETS,
+  },
+  {
+    id: "lost-www",
+    marker: "PATCH(arduino-remote-lost-www)",
+    old: `    // PATCH(arduino-remote-unpair-www): فقط حذف جفت
+    unpair: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "unpair", [macAddress]);
+    },`,
+    new: `    // PATCH(arduino-remote-unpair-www): فقط حذف جفت
+    unpair: function (macAddress, success, failure) {
+        cordova.exec(success, failure, "BluetoothSerial", "unpair", [macAddress]);
+    },
+
+    // PATCH(arduino-remote-lost-www): رویداد دائمی قطع‌شدن اتصال (خاموشی ماژول، خروج از رنج)
+    setConnectionLostListener: function (notify) {
+        cordova.exec(notify, notify, "BluetoothSerial", "setConnectionLostListener", []);
+    },
+    clearConnectionLostListener: function () {
+        cordova.exec(null, null, "BluetoothSerial", "clearConnectionLostListener", []);
+    },`,
+    targets: WWW_TARGETS,
+  },
+
+  /* پچ ۱۳ — write-gate: نوشتن روی اتصال مرده success جعلی برنمی‌گرداند
+     (قبلاً write وقتی state متصل نبود بی‌صدا return می‌کرد و پلاگین success می‌داد) */
+  {
+    id: "write-gate",
+    marker: "PATCH(arduino-remote-write-gate)",
+    old: `        } else if (action.equals(WRITE)) {
+
+            byte[] data = args.getArrayBuffer(0);
+            bluetoothSerialService.write(data);
+            callbackContext.success();`,
+    new: `        } else if (action.equals(WRITE)) {
+
+            // PATCH(arduino-remote-write-gate): ارسال روی اتصال مرده باید خطا بدهد نه success جعلی
+            if (bluetoothSerialService.getState() != BluetoothSerialService.STATE_CONNECTED) {
+                callbackContext.error("Not connected.");
+            } else {
+                byte[] data = args.getArrayBuffer(0);
+                bluetoothSerialService.write(data);
+                callbackContext.success();
+            }`,
+    targets: JAVA_TARGETS,
+  },
 ];
 
 let patched = 0;
