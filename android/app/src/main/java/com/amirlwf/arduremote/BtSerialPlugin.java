@@ -205,7 +205,8 @@ public class BtSerialPlugin extends Plugin {
         final BluetoothAdapter a = adapter();
         // disconnect باید حتی وسط connect در دسترس باشد → connect در ترد خودش
         Thread t = new Thread(() -> {
-            String lastError = "connect-failed";
+            // همه‌ی خطاها جمع می‌شوند تا لاگ نشان دهد کدام نوع سوکت چه خطایی داد
+            final StringBuilder errs = new StringBuilder();
             try {
                 a.cancelDiscovery();
                 // انتظار خروج رادیو از inquiry (الهام از SimpleBluetoothTerminal)
@@ -224,7 +225,7 @@ public class BtSerialPlugin extends Plugin {
                     succeed(call, s);
                     return;
                 } catch (IOException e) {
-                    lastError = "spp: " + e;
+                    errs.append("spp: ").append(e.getMessage());
                     closeQuietly();
                 } catch (SecurityException e) {
                     call.reject("Bluetooth permission required to connect");
@@ -245,11 +246,12 @@ public class BtSerialPlugin extends Plugin {
                         succeed(call, s);
                         return;
                     } catch (IOException e) {
-                        lastError = "ch" + ch + ": " + e;
+                        if (errs.length() > 0) errs.append(" | ");
+                        errs.append("ch").append(ch).append(": ").append(e.getMessage());
                         closeQuietly();
                     }
                 }
-                call.reject("Unable to connect to device — " + lastError);
+                call.reject("Unable to connect to device — " + errs);
             } catch (IllegalArgumentException e) {
                 call.reject("Invalid Bluetooth MAC address: " + address);
             } catch (Exception e) {

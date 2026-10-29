@@ -376,7 +376,7 @@ export function SettingsView() {
           شبیه‌ساز برای یادگیری، وب‌سوکت برای پل‌های سفارشی، سریال USB برای تست با کابل.
         </div>
         <div className="hint" style={{ marginTop: 8 }} data-testid="creator">
-          نسخه ۱.۰.۱۵ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
+          نسخه ۱.۰.۱۶ — Arduino Remote · ساخته‌شده با TypeScript + React + Capacitor
           <br />
           سازنده:{" "}
           <a href="https://amirlwf.ir" target="_blank" rel="noreferrer">
