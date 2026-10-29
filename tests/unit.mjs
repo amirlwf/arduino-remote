@@ -348,7 +348,7 @@ const REFUSED_ERR = "Unable to connect to device — ch3: java.io.IOException: C
   fake.failWith = RESET_ERR;
   err = await run();
   eq("bt: سه‌مرحله (بدون جفت → unpair → جفت) وصل شد", err ? "THREW:" + err.message : JSON.stringify(fake.calls),
-     '["connect","connect","connect","unpair","connect","connect","pair","connect"]');
+     '["connect","connect","unpair","connect","connect","pair","connect"]');
 
   // حالت ۴: لغو جفت در مرحلهٔ آخر → پیام فارسی
   fake.calls = [];

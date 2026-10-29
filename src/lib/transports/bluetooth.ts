@@ -285,6 +285,8 @@ export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_
         return { ok: true, lastErr };
       } catch (e) {
         lastErr = e as Error;
+        // دلیل خام هر شکست — کلید عیب‌یابی سخت‌افزاری
+        logAppend("err", `تلاش ${i}/${rounds} شکست خورد — ${lastErr.message}`);
       }
       if (!isResetError(lastErr)) break; // خطای دیگر (مثلاً اشغال بودن) تکرارش بی‌فایده است
     }
@@ -296,7 +298,9 @@ export async function btConnect(address: string, timeoutMs: number = BT_CONNECT_
     // وصل کردن داخل این پنجره دقیقاً java.io.IOException: read failed می‌دهد
     await sleep(1000);
 
-    let res = await tryRounds(3);
+    // هر تلاش نیتیو خودش ۴ نوع سوکت (SPP + کانال ۱..۳) را امتحان می‌کند —
+    // دو دور برای رد شدن از پنجره‌ی ریست ماژول کافی است
+    let res = await tryRounds(2);
 
     // مرحله ۲: کلید احتمالی کهنه را حذف کن و باز هم تلاش کن (حالت اپ استاندارد)
     if (!res.ok && !isCancelled() && isResetError(res.lastErr)) {

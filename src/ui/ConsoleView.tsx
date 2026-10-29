@@ -24,6 +24,35 @@ export function ConsoleView() {
     else if (r.error) toast(r.error, "err");
   };
 
+  const copyAll = async () => {
+    const text = logs
+      .map((e) => `${timeLabel(e.ts)} [${DIR_NAME[e.dir] ?? e.dir}] ${e.text}`)
+      .join("\n");
+    if (text === "") {
+      toast("لاگی برای کپی نیست", "err");
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("کل لاگ در کلیپ‌بورد کپی شد", "ok");
+    } catch {
+      // WebView اندروید ممکن است Clipboard API را ندهد — راه دوم
+      try {
+        const ta = document.createElement("textarea");
+        ta.value = text;
+        ta.style.position = "fixed";
+        ta.style.opacity = "0";
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand("copy");
+        document.body.removeChild(ta);
+        toast("کل لاگ در کلیپ‌بورد کپی شد", "ok");
+      } catch {
+        toast("کپی خودکار نشد", "err");
+      }
+    }
+  };
+
   return (
     <>
       <div className="sect-head">
@@ -34,6 +63,9 @@ export function ConsoleView() {
           </span>
         </div>
         <div className="rowbtns">
+          <button type="button" className="btn small" data-testid="log-copy" onClick={() => void copyAll()}>
+            کپی
+          </button>
           <button type="button" className="btn small" data-testid="log-clear" onClick={() => clearLogs()}>
             پاک کردن
           </button>
